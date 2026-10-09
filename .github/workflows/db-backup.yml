@@ -1,0 +1,36 @@
+name: Automated Daily Database Backup
+
+on:
+  schedule:
+    # Runs everyday at 02:00 UTC
+    - cron: "0 2 * * *"
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install PostgreSQL client tools
+        run: sudo apt-get install -y postgresql-client
+
+      - name: Create backup directory
+        run: mkdir -p backups
+
+      - name: Dump PostgreSQL database
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          TIMESTAMP=$(date +"%Y-%m-%d_%H%M%S")
+          pg_dump "$DATABASE_URL" --clean --if-exists --no-owner --no-privileges -f "backups/infazys_backup_${TIMESTAMP}.sql"
+          gzip "backups/infazys_backup_${TIMESTAMP}.sql"
+
+      - name: Upload backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: backups/*.sql.gz
+          retention-days: 30

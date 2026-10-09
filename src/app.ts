@@ -13,18 +13,30 @@ import users from "./routes/users.routes";
 import masters from "./routes/masters.routes";
 import cif from "./routes/cif.routes";
 
+import { pool } from "./db";
+import { requestLogger } from "./logger";
+
 export const app = express();
 
 app.use(helmet());
 app.use(cors({ origin: config.CORS_ORIGIN, credentials: true }));
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
+app.use(requestLogger);
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// Health check — verifies database connectivity.
+// Does NOT expose credentials, version numbers, or financial data.
+app.get("/health", async (_req, res) => {
+  try {
+    await pool.query("SELECT 1");
+    res.json({ ok: true, timestamp: new Date().toISOString() });
+  } catch {
+    res.status(503).json({ ok: false });
+  }
+});
 
 // Swagger UI Route
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
-
 app.use("/auth", auth);
 app.use("/users", users);
 app.use("/records", records);

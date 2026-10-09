@@ -38,7 +38,7 @@ describe("CIF & Master Rules", () => {
 
   it("1. Staff cannot verify - Maker Checker", () => {
     const staffUser: any = { id: "1", role: "staff" };
-    const adminUser: any = { id: "2", role: "super_admin" };
+    const adminUser: any = { id: "2", role: "admin" };
     
     expect(makerFields(staffUser).status).toBe("pending");
     expect(makerFields(adminUser).status).toBe("verified");
@@ -66,7 +66,7 @@ describe("CIF & Master Rules", () => {
 
   it("3. Duplicate phone gives a clear error", async () => {
     const mockPool = pool as any;
-    mockPool.query.mockResolvedValueOnce({ rows: [{ id: "1", is_active: true, role: "super_admin" }] });
+    mockPool.query.mockResolvedValueOnce({ rows: [{ id: "1", is_active: true, role: "admin" }] });
     mockPool.query.mockResolvedValueOnce({ rows: [{ module: "financial", level: "edit" }] });
 
     const mockTx = tx as any;
@@ -87,7 +87,7 @@ describe("CIF & Master Rules", () => {
 
   it("4. Invalid file type is rejected", async () => {
     const mockPool = pool as any;
-    mockPool.query.mockResolvedValueOnce({ rows: [{ id: "1", is_active: true, role: "super_admin" }] });
+    mockPool.query.mockResolvedValueOnce({ rows: [{ id: "1", is_active: true, role: "admin" }] });
     mockPool.query.mockResolvedValueOnce({ rows: [{ module: "financial", level: "edit" }] });
 
     const res = await request(app)

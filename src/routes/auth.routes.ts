@@ -68,7 +68,9 @@ router.post("/login", loginLimiter, async (req, res) => {
 
   res.cookie("token", signToken(String(user.id)), {
     httpOnly: true,
-    sameSite: "strict",
+    // Frontend (Vercel) and backend (Render) are on different domains.
+    // sameSite: "strict" would block the cookie on cross-origin API requests.
+    sameSite: config.NODE_ENV === "production" ? "none" : "strict",
     secure: config.NODE_ENV === "production",
     maxAge: config.SESSION_HOURS * 3600 * 1000,
   });

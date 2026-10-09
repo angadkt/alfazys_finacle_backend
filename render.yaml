@@ -1,0 +1,36 @@
+# ============================================================
+# Render Blueprint — INFAZYS Backend
+# https://render.com/docs/blueprint-spec
+# ============================================================
+
+services:
+  - type: web
+    name: infazys-api
+    runtime: node
+    region: singapore
+    plan: free                          # Upgrade to starter before client use
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: infazys-db
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true             # Render generates a random value
+      - key: DOC_ENCRYPTION_KEY
+        sync: false                     # Must be set manually (32 chars)
+      - key: CORS_ORIGIN
+        value: https://alfazys-finacle.vercel.app
+      - key: SESSION_HOURS
+        value: "8"
+
+databases:
+  - name: infazys-db
+    plan: free                          # 30-day limit — migrate to AWS before day 25
+    region: singapore
+    databaseName: infazys
+    postgresMajorVersion: "16"

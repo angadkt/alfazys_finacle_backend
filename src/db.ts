@@ -5,7 +5,12 @@ import { config } from "./config";
 types.setTypeParser(1082, (v) => v);
 // NUMERIC stays as text on purpose, so money never becomes a float.
 
-export const pool = new Pool({ connectionString: config.DATABASE_URL });
+export const pool = new Pool({
+  connectionString: config.DATABASE_URL,
+  // Render (and AWS RDS) require SSL. Disable certificate verification for
+  // managed databases that use self-signed certs. Keep SSL off for local dev.
+  ssl: config.NODE_ENV === "production" ? { rejectUnauthorized: false } : false,
+});
 
 export type Queryable = Pick<Pool, "query">;
 
