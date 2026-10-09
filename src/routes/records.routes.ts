@@ -12,7 +12,7 @@ import { audit } from "../audit";
  */
 const router = Router();
 
-// Temporary endpoint to seed cif_types without requiring auth
+// Temporary endpoint to seed cif_types and branches without requiring auth
 router.get("/seed-cifs-temp", async (req, res) => {
   try {
     await pool.query(`
@@ -23,8 +23,13 @@ router.get("/seed-cifs-temp", async (req, res) => {
       (4, 'OTHER', true),
       (7, 'SUPPLIER', true)
       ON CONFLICT (id) DO NOTHING;
+
+      INSERT INTO branches (id, name, is_active) OVERRIDING SYSTEM VALUE VALUES 
+      (1, 'UAE', true),
+      (2, 'INDIA', true)
+      ON CONFLICT (id) DO NOTHING;
     `);
-    res.send("<h1>Success! CIF Types seeded.</h1><p>You can close this tab and go back to testing.</p>");
+    res.send("<h1>Success! CIF Types and Branches seeded.</h1><p>You can close this tab and go back to testing.</p>");
   } catch (err: any) {
     res.status(500).send(`<h1>Error</h1><p>${err.message}</p>`);
   }
