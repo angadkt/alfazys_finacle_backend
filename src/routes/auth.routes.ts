@@ -66,16 +66,21 @@ router.post("/login", loginLimiter, async (req, res) => {
     throw new HttpError(401, "Wrong email or password");
   }
 
-  res.cookie("token", signToken(String(user.id)), {
+  const token = signToken(String(user.id));
+
+  res.cookie("token", token, {
     httpOnly: true,
-    // Frontend (Vercel) and backend (Render) are on different domains.
-    // sameSite: "strict" would block the cookie on cross-origin API requests.
-    sameSite: config.NODE_ENV === "production" ? "none" : "strict",
+    // Cross-origin: "none" in production (requires secure: true).
+    // In local development, "lax" allows cross-port local testing.
+    sameSite: config.NODE_ENV === "production" ? "none" : "lax",
     secure: config.NODE_ENV === "production",
     maxAge: config.SESSION_HOURS * 3600 * 1000,
   });
   await audit(pool, { userId: String(user.id), action: "login", ip: req.ip });
-  res.json({ user: { id: String(user.id), fullName: user.full_name, email: user.email, role: user.role } });
+  res.json({
+    token,
+    user: { id: String(user.id), fullName: user.full_name, email: user.email, role: user.role },
+  });
 });
 
 /**

@@ -18,8 +18,56 @@ import { requestLogger } from "./logger";
 
 export const app = express();
 
-app.use(helmet());
-app.use(cors({ origin: config.CORS_ORIGIN, credentials: true }));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
+
+// Allowed origins for CORS (supports local development, Vercel frontend, and env overrides)
+const allowedOrigins = [
+  "https://alfazys-finacle.vercel.app",
+  "http://localhost:5173",
+  "http://localhost:3000",
+  "http://localhost:4173",
+  "http://127.0.0.1:5173",
+  "http://127.0.0.1:3000",
+];
+
+const customOrigins = config.CORS_ORIGIN
+  ? config.CORS_ORIGIN.split(",").map((o) => o.trim())
+  : [];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like Postman, mobile apps, curl)
+      if (!origin) return callback(null, true);
+
+      // Check configured origins
+      if (allowedOrigins.includes(origin) || customOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow any Vercel preview deployment (*.vercel.app)
+      if (/^https:\/\/[a-zA-Z0-9_.-]+\.vercel\.app$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      // Allow any localhost / 127.0.0.1 port (for local dev testing)
+      if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+        return callback(null, true);
+      }
+
+      callback(new Error(`Origin ${origin} not allowed by CORS`));
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Cookie", "X-Requested-With", "Accept"],
+    exposedHeaders: ["Set-Cookie"],
+  }),
+);
+
 app.use(express.json({ limit: "1mb" }));
 app.use(cookieParser());
 app.use(requestLogger);
