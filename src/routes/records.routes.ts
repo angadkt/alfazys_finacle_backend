@@ -28,11 +28,18 @@ const dataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boole
  *         application/json:
  *           schema:
  *             type: object
- *             required: [first_name, contact_number]
+ *             required: [title, first_name, last_name, short_name, gender, nationality, contact_number, ccy, branch_id, cif_type_id]
  *             properties:
+ *               title: { type: string }
  *               first_name: { type: string }
  *               last_name: { type: string }
+ *               short_name: { type: string }
+ *               gender: { type: string }
+ *               nationality: { type: string }
  *               contact_number: { type: string }
+ *               ccy: { type: string }
+ *               branch_id: { type: number }
+ *               cif_type_id: { type: number }
  *               email: { type: string }
  *               _profile: { type: object }
  *     responses:
