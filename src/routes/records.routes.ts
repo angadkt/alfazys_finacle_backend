@@ -74,6 +74,79 @@ router.post("/credit", async (req, res) => {
 
 /**
  * @openapi
+ * /records/credit:
+ *   get:
+ *     summary: Get all Credit Entries
+ *     tags: [Records]
+ *     responses:
+ *       200:
+ *         description: List of credit entries
+ */
+router.get("/credit", async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT c.*, 
+           maker.full_name as created_by_name, 
+           checker.full_name as verified_by_name
+    FROM credit_entries c
+    LEFT JOIN users maker ON c.created_by = maker.id
+    LEFT JOIN users checker ON c.verified_by = checker.id
+    ORDER BY c.created_at DESC
+  `);
+  res.json({ records: rows });
+});
+
+/**
+ * @openapi
+ * /records/credit/{id}:
+ *   patch:
+ *     summary: Edit a Credit Entry
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             description: Include only the fields you wish to update
+ *     responses:
+ *       200:
+ *         description: Record updated or change requested
+ */
+router.patch("/credit/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  const data = dataSchema.parse(req.body);
+  res.json(await editRecord(req.user!, "credit_entries", id, data, req.ip));
+});
+
+/**
+ * @openapi
+ * /records/credit/{id}:
+ *   delete:
+ *     summary: Delete a Credit Entry
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Record deleted or delete requested
+ */
+router.delete("/credit/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  res.json(await deleteOrRequest(req.user!, "credit_entries", id, req.ip));
+});
+
+/**
+ * @openapi
  * /records/orders:
  *   post:
  *     summary: Add an Order Entry
@@ -138,6 +211,79 @@ router.post("/orders", async (req, res) => {
   
   await audit(pool, { userId: req.user!.id, action: "create", table: "orders", recordId: rows[0].id, newData: rows[0], ip: req.ip });
   res.status(201).json({ record: rows[0] });
+});
+
+/**
+ * @openapi
+ * /records/orders:
+ *   get:
+ *     summary: Get all Order Entries
+ *     tags: [Records]
+ *     responses:
+ *       200:
+ *         description: List of order entries
+ */
+router.get("/orders", async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT o.*, 
+           maker.full_name as created_by_name, 
+           checker.full_name as verified_by_name
+    FROM orders o
+    LEFT JOIN users maker ON o.created_by = maker.id
+    LEFT JOIN users checker ON o.verified_by = checker.id
+    ORDER BY o.created_at DESC
+  `);
+  res.json({ records: rows });
+});
+
+/**
+ * @openapi
+ * /records/orders/{id}:
+ *   patch:
+ *     summary: Edit an Order Entry
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             description: Include only the fields you wish to update
+ *     responses:
+ *       200:
+ *         description: Record updated or change requested
+ */
+router.patch("/orders/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  const data = dataSchema.parse(req.body);
+  res.json(await editRecord(req.user!, "orders", id, data, req.ip));
+});
+
+/**
+ * @openapi
+ * /records/orders/{id}:
+ *   delete:
+ *     summary: Delete an Order Entry
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Record deleted or delete requested
+ */
+router.delete("/orders/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  res.json(await deleteOrRequest(req.user!, "orders", id, req.ip));
 });
 
 router.patch("/:table/:id", async (req, res) => {
