@@ -14,7 +14,172 @@ const router = Router();
 router.use(requireAuth);
 
 const params = z.object({ table: z.string(), id: z.string().regex(/^\d+$/) });
-const dataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]));
+const dataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null(), z.object({}).passthrough(), z.array(z.object({}).passthrough())]));
+
+/**
+ * @openapi
+ * /records/parties:
+ *   post:
+ *     summary: Create a CIF / Party
+ *     tags: [Records]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [first_name, contact_number]
+ *             properties:
+ *               first_name: { type: string }
+ *               last_name: { type: string }
+ *               contact_number: { type: string }
+ *               email: { type: string }
+ *               _profile: { type: object }
+ *     responses:
+ *       201:
+ *         description: CIF created
+ */
+router.post("/parties", async (req, res) => {
+  const body = z.object({
+    first_name: z.string().trim().min(1),
+    last_name: z.string().trim().optional().nullable(),
+    short_name: z.string().trim().optional().nullable(),
+    gender: z.string().optional().nullable(),
+    nationality: z.string().optional().nullable(),
+    contact_number: z.string().trim().min(1),
+    branch_id: z.coerce.number().optional().nullable(),
+    cif_type_id: z.coerce.number().optional().nullable(),
+    email: z.string().email().optional().nullable().or(z.literal("")),
+    indian_number: z.string().optional().nullable(),
+    whatsapp_number: z.string().optional().nullable(),
+    _profile: z.object({
+      contacts: z.array(z.object({
+        number: z.string(),
+        relation: z.string()
+      })).optional(),
+      addresses: z.array(z.object({
+        address_format: z.string().optional(),
+        address_type: z.string().optional(),
+        house_no: z.string().optional(),
+        premise_name: z.string().optional().nullable(),
+        building_level: z.string().optional().nullable(),
+        street_no: z.string().optional(),
+        suburb: z.string().optional().nullable(),
+        street_name: z.string().optional(),
+        locality: z.string().optional().nullable(),
+        town: z.string().optional().nullable(),
+        city: z.string().optional(),
+        state: z.string().optional(),
+        country: z.string().optional(),
+        postal_code: z.string().optional(),
+        valid_from: z.string().optional(),
+        valid_till: z.string().optional().nullable(),
+        address_proof_received: z.boolean().or(z.enum(["Yes", "No"])).optional().nullable()
+      })).optional()
+    }).optional().nullable()
+  }).parse(req.body);
+
+  const mf = makerFields(req.user!);
+
+  const record = await tx(async (c) => {
+    const { rows } = await c.query(
+      `INSERT INTO parties (first_name, last_name, short_name, gender, nationality, contact_number, branch_id, cif_type_id, email, indian_number, whatsapp_number, status, created_by, verified_by, verified_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9, ''), $10, $11, $12, $13, $14, $15) RETURNING *`,
+      [body.first_name, body.last_name, body.short_name, body.gender, body.nationality, body.contact_number, body.branch_id, body.cif_type_id, body.email, body.indian_number, body.whatsapp_number, mf.status, mf.created_by, mf.verified_by, mf.verified_at]
+    );
+    const party = rows[0];
+
+    if (body._profile) {
+      if (body._profile.contacts) {
+        for (const con of body._profile.contacts) {
+          await c.query("INSERT INTO party_contacts (party_id, number, relation) VALUES ($1, $2, $3)", [party.id, con.number, con.relation]);
+        }
+      }
+      if (body._profile.addresses) {
+        for (const addr of body._profile.addresses) {
+          await c.query(`INSERT INTO party_addresses 
+            (party_id, address_format, address_type, house_no, premise_name, building_level, street_no, suburb, street_name, locality, town, city, state, country, postal_code, valid_from, valid_till, address_proof_received) 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, COALESCE(NULLIF($16, ''), CURRENT_DATE::text)::date, NULLIF($17, '')::date, $18)`, 
+            [party.id, addr.address_format, addr.address_type, addr.house_no, addr.premise_name, addr.building_level, addr.street_no, addr.suburb, addr.street_name, addr.locality, addr.town, addr.city, addr.state, addr.country, addr.postal_code, addr.valid_from, addr.valid_till, addr.address_proof_received === "Yes" || addr.address_proof_received === true]);
+        }
+      }
+    }
+    
+    await audit(c, { userId: req.user!.id, action: "create", table: "parties", recordId: party.id, newData: { ...party, _profile: body._profile }, ip: req.ip });
+    return party;
+  });
+
+  res.status(201).json({ record });
+});
+
+/**
+ * @openapi
+ * /records/parties:
+ *   get:
+ *     summary: Get all Parties (CIFs)
+ *     tags: [Records]
+ *     responses:
+ *       200:
+ *         description: List of parties
+ */
+router.get("/parties", async (req, res) => {
+  const { rows } = await pool.query(`
+    SELECT p.*,
+           maker.full_name as created_by_name,
+           checker.full_name as verified_by_name,
+           (SELECT json_agg(c) FROM party_contacts c WHERE c.party_id = p.id) as contacts,
+           (SELECT json_agg(a) FROM party_addresses a WHERE a.party_id = p.id) as addresses
+    FROM parties p
+    LEFT JOIN users maker ON p.created_by = maker.id
+    LEFT JOIN users checker ON p.verified_by = checker.id
+    ORDER BY p.created_at DESC
+  `);
+  res.json({ records: rows });
+});
+
+/**
+ * @openapi
+ * /records/parties/{id}:
+ *   patch:
+ *     summary: Edit a CIF / Party
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Record updated
+ */
+router.patch("/parties/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  const data = dataSchema.parse(req.body);
+  res.json(await editRecord(req.user!, "parties", id, data, req.ip));
+});
+
+/**
+ * @openapi
+ * /records/parties/{id}:
+ *   delete:
+ *     summary: Delete a CIF / Party
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Record deleted
+ */
+router.delete("/parties/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  res.json(await deleteOrRequest(req.user!, "parties", id, req.ip));
+});
+
 
 /**
  * @openapi
