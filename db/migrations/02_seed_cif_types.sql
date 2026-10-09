@@ -5,5 +5,6 @@ INSERT INTO cif_types (name, is_active) VALUES
   ('EMPLOYEE', true),
   ('OTHER', true),
   ('SERVICER', true),
-  ('PAYMENT DISTRIBUTER', true)
+  ('PAYMENT DISTRIBUTER', true),
+  ('SUPPLIER', true)
 ON CONFLICT (name) DO NOTHING;
