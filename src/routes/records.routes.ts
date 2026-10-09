@@ -11,6 +11,25 @@ import { audit } from "../audit";
  * Staff: own pending records are edited directly. Verified records become a request.
  */
 const router = Router();
+
+// Temporary endpoint to seed cif_types without requiring auth
+router.get("/seed-cifs-temp", async (req, res) => {
+  try {
+    await pool.query(`
+      INSERT INTO cif_types (id, name, is_active) VALUES 
+      (1, 'AGENT', true),
+      (2, 'CUSTOMER', true),
+      (3, 'EMPLOYEE', true),
+      (4, 'OTHER', true),
+      (7, 'SUPPLIER', true)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    res.send("<h1>Success! CIF Types seeded.</h1><p>You can close this tab and go back to testing.</p>");
+  } catch (err: any) {
+    res.status(500).send(`<h1>Error</h1><p>${err.message}</p>`);
+  }
+});
+
 router.use(requireAuth);
 
 const params = z.object({ table: z.string(), id: z.string().regex(/^\d+$/) });
