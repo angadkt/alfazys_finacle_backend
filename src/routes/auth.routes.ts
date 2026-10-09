@@ -111,6 +111,32 @@ router.get("/me", requireAuth, (req, res) => {
 
 const passwordSchema = z.string().min(10, "Password must be at least 10 characters").max(200);
 
+/**
+ * @openapi
+ * /auth/change-password:
+ *   post:
+ *     summary: Change user password
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               currentPassword:
+ *                 type: string
+ *               newPassword:
+ *                 type: string
+ *                 description: Must be at least 10 characters
+ *     responses:
+ *       200:
+ *         description: Password successfully changed
+ *       400:
+ *         description: Current password is wrong or new password is too short
+ *       401:
+ *         description: Unauthorized (Must be logged in)
+ */
 router.post("/change-password", requireAuth, async (req, res) => {
   const { currentPassword, newPassword } = z
     .object({ currentPassword: z.string().min(1), newPassword: passwordSchema })

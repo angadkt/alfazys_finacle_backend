@@ -17,6 +17,26 @@ const password = z.string().min(10, "Password must be at least 10 characters").m
 
 const USER_FIELDS = "id, full_name, email, role, is_active, created_at";
 
+/**
+ * @openapi
+ * /users/staff:
+ *   get:
+ *     summary: Get all staff members
+ *     tags: [Users]
+ *     responses:
+ *       200:
+ *         description: List of staff members
+ */
+router.get("/staff", async (_req, res) => {
+  const { rows } = await pool.query(
+    `SELECT u.id, u.full_name, u.email, u.role, u.is_active, u.created_at,
+            COALESCE(jsonb_object_agg(p.module, p.level) FILTER (WHERE p.module IS NOT NULL), '{}') AS permissions
+     FROM users u LEFT JOIN user_permissions p ON p.user_id = u.id
+     WHERE u.role = 'staff'
+     GROUP BY u.id ORDER BY u.id`);
+  res.json({ staff: rows });
+});
+
 router.get("/", async (_req, res) => {
   const { rows } = await pool.query(
     `SELECT u.id, u.full_name, u.email, u.role, u.is_active, u.created_at,
@@ -26,12 +46,58 @@ router.get("/", async (_req, res) => {
   res.json({ users: rows });
 });
 
+/**
+ * @openapi
+ * /users:
+ *   post:
+ *     summary: Create a new Staff user
+ *     tags: [Users]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - fullName
+ *               - email
+ *               - password
+ *             properties:
+ *               fullName:
+ *                 type: string
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               password:
+ *                 type: string
+ *               role:
+ *                 type: string
+ *                 enum: [staff]
+ *                 default: staff
+ *               permissions:
+ *                 type: object
+ *                 properties:
+ *                   financial:
+ *                     type: string
+ *                     enum: [none, view, edit]
+ *                   flat:
+ *                     type: string
+ *                     enum: [none, view, edit]
+ *                   investment:
+ *                     type: string
+ *                     enum: [none, view, edit]
+ *     responses:
+ *       201:
+ *         description: User created successfully
+ *       403:
+ *         description: Forbidden (Only admins can create users)
+ */
 router.post("/", async (req, res) => {
   const body = z.object({
     fullName: z.string().trim().min(1).max(200),
     email: z.string().trim().toLowerCase().pipe(z.email()),
     password,
-    role: z.enum(["admin", "staff", "agent"]).default("staff"),
+    role: z.literal("staff").default("staff"),
     permissions: permissionsSchema.optional(),
   }).parse(req.body);
 
