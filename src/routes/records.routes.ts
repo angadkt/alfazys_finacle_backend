@@ -41,14 +41,16 @@ const dataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boole
  */
 router.post("/parties", async (req, res) => {
   const body = z.object({
+    title: z.string().trim().min(1),
     first_name: z.string().trim().min(1),
-    last_name: z.string().trim().optional().nullable(),
-    short_name: z.string().trim().optional().nullable(),
-    gender: z.string().optional().nullable(),
-    nationality: z.string().optional().nullable(),
+    last_name: z.string().trim().min(1),
+    short_name: z.string().trim().min(1),
+    gender: z.string().min(1),
+    nationality: z.string().min(1),
     contact_number: z.string().trim().min(1),
-    branch_id: z.coerce.number().optional().nullable(),
-    cif_type_id: z.coerce.number().optional().nullable(),
+    ccy: z.string().min(1),
+    branch_id: z.coerce.number(),
+    cif_type_id: z.coerce.number(),
     email: z.string().email().optional().nullable().or(z.literal("")),
     indian_number: z.string().optional().nullable(),
     whatsapp_number: z.string().optional().nullable(),
