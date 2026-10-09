@@ -61,6 +61,19 @@ const dataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boole
  *               cif_type_id: { type: number }
  *               email: { type: string }
  *               _profile: { type: object }
+ *             example:
+ *               title: "Mr"
+ *               first_name: "Aman"
+ *               last_name: "Pk"
+ *               short_name: "Aman"
+ *               gender: "Male"
+ *               nationality: "India"
+ *               contact_number: "4252345234"
+ *               ccy: "INR"
+ *               branch_id: 1
+ *               cif_type_id: 2
+ *               email: "aman@example.com"
+ *               _profile: { "contacts": [], "addresses": [] }
  *     responses:
  *       201:
  *         description: CIF created
