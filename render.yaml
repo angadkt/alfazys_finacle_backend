@@ -9,7 +9,7 @@ services:
     runtime: node
     region: singapore
     plan: free                          # Upgrade to starter before client use
-    buildCommand: npm install && npm run build
+    buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
     envVars:
