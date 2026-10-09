@@ -51,7 +51,7 @@ async function updateFields(c: PoolClient, table: string, id: string, data: Fiel
  * Super admin records are verified at once. Staff records start as pending.
  */
 export function makerFields(user: AuthUser) {
-  const admin = user.role === "super_admin";
+  const admin = user.role === "admin";
   return {
     status: admin ? "verified" : "pending",
     created_by: user.id,
@@ -70,7 +70,7 @@ export async function editRecord(user: AuthUser, table: string, id: string, data
     const old = await lockRecord(c, table, id);
 
     // Super admin: the change is applied now.
-    if (user.role === "super_admin") {
+    if (user.role === "admin") {
       await allowVerifiedChange(c);
       const updatedDb = await updateFields(c, table, id, data);
       const updated = { ...updatedDb, ...data }; // Merge virtual fields
@@ -114,7 +114,7 @@ export async function deleteOrRequest(user: AuthUser, table: string, id: string,
   return tx(async (c) => {
     const old = await lockRecord(c, table, id);
 
-    if (user.role === "super_admin") {
+    if (user.role === "admin") {
       await deleteNow(c, conf, table, id, old);
       await audit(c, { userId: user.id, action: "delete", table, recordId: id, oldData: old, ip });
       return { applied: true };

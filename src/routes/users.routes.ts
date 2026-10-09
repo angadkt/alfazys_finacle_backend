@@ -1,14 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { audit } from "../audit";
-import { requireAuth, requireSuperAdmin } from "../auth/middleware";
+import { requireAuth, requireAdmin } from "../auth/middleware";
 import { hashPassword } from "../auth/password";
 import { MODULES } from "../auth/permissions";
 import { pool, tx } from "../db";
 import { HttpError } from "../errors";
 
 const router = Router();
-router.use(requireAuth, requireSuperAdmin);
+router.use(requireAuth, requireAdmin);
 
 const idParam = z.object({ id: z.string().regex(/^\d+$/) });
 const level = z.enum(["none", "view", "edit"]);
@@ -31,7 +31,7 @@ router.post("/", async (req, res) => {
     fullName: z.string().trim().min(1).max(200),
     email: z.string().trim().toLowerCase().pipe(z.email()),
     password,
-    role: z.enum(["super_admin", "staff"]).default("staff"),
+    role: z.enum(["admin", "staff", "agent"]).default("staff"),
     permissions: permissionsSchema.optional(),
   }).parse(req.body);
 
@@ -55,7 +55,7 @@ router.patch("/:id", async (req, res) => {
   const body = z.object({
     fullName: z.string().trim().min(1).max(200).optional(),
     isActive: z.boolean().optional(),
-    role: z.enum(["super_admin", "staff"]).optional(),
+    role: z.enum(["admin", "staff", "agent"]).optional(),
   }).parse(req.body);
 
   if (id === req.user!.id && (body.isActive === false || body.role === "staff")) {

@@ -8,7 +8,7 @@
 -- =====================================================================
 
 -- ---------- Types ----------
-CREATE TYPE user_role     AS ENUM ('super_admin', 'staff');
+CREATE TYPE user_role     AS ENUM ('admin', 'staff', 'agent');
 CREATE TYPE record_status AS ENUM ('pending', 'verified', 'rejected');
 CREATE TYPE module_name   AS ENUM ('financial', 'flat', 'investment');
 CREATE TYPE access_level  AS ENUM ('none', 'view', 'edit');

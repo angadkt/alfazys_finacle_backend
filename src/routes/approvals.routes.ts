@@ -1,12 +1,12 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAuth, requireSuperAdmin } from "../auth/middleware";
+import { requireAuth, requireAdmin } from "../auth/middleware";
 import {
   approveChange, listChanges, listPending, pendingSummary, rejectChange, rejectRecord, verifyRecord,
 } from "../makerChecker";
 
 const router = Router();
-router.use(requireAuth, requireSuperAdmin);
+router.use(requireAuth, requireAdmin);
 
 const recordParams = z.object({ table: z.string(), id: z.string().regex(/^\d+$/) });
 const changeParams = z.object({ id: z.string().regex(/^\d+$/) });

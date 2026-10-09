@@ -44,8 +44,8 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
   next();
 }
 
-export function requireSuperAdmin(req: Request, _res: Response, next: NextFunction) {
-  if (req.user?.role !== "super_admin") throw new HttpError(403, "Only the super admin can do this");
+export function requireAdmin(req: Request, _res: Response, next: NextFunction) {
+  if (req.user?.role !== "admin") throw new HttpError(403, "Only the admin can do this");
   next();
 }
 

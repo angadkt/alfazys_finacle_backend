@@ -27,6 +27,33 @@ const loginSchema = z.object({
   password: z.string().min(1).max(200),
 });
 
+/**
+ * @openapi
+ * /auth/login:
+ *   post:
+ *     summary: Authenticate user
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               email:
+ *                 type: string
+ *                 example: sarah.alfayed@finacle.io
+ *               password:
+ *                 type: string
+ *                 example: admin
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *       401:
+ *         description: Invalid credentials
+ *       429:
+ *         description: Too many login attempts
+ */
 router.post("/login", loginLimiter, async (req, res) => {
   const { email, password } = loginSchema.parse(req.body);
   const { rows } = await pool.query(
@@ -49,11 +76,33 @@ router.post("/login", loginLimiter, async (req, res) => {
   res.json({ user: { id: String(user.id), fullName: user.full_name, email: user.email, role: user.role } });
 });
 
+/**
+ * @openapi
+ * /auth/logout:
+ *   post:
+ *     summary: Logout user
+ *     tags: [Authentication]
+ *     responses:
+ *       200:
+ *         description: Logout successful
+ */
 router.post("/logout", (_req, res) => {
   res.clearCookie("token");
   res.json({ ok: true });
 });
 
+/**
+ * @openapi
+ * /auth/me:
+ *   get:
+ *     summary: Check current session
+ *     tags: [Authentication]
+ *     responses:
+ *       200:
+ *         description: Session valid
+ *       401:
+ *         description: Unauthorized
+ */
 router.get("/me", requireAuth, (req, res) => {
   res.json({ user: req.user });
 });

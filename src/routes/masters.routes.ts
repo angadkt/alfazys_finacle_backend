@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { requireAuth, requireModule, requireSuperAdmin } from "../auth/middleware";
+import { requireAuth, requireModule, requireAdmin } from "../auth/middleware";
 import { pool, tx } from "../db";
 import { HttpError } from "../errors";
 import { audit } from "../audit";
@@ -37,7 +37,7 @@ const buyersSchema = z.object({
 
 router.get("/:table", requireModule("financial", "view"), async (req, res) => {
   const table = tableSchema.parse(req.params.table);
-  const includeInactive = req.user?.role === "super_admin" && req.query.all === "true";
+  const includeInactive = req.user?.role === "admin" && req.query.all === "true";
   
   let q = `SELECT * FROM ${table}`;
   if (!includeInactive) {
@@ -49,7 +49,7 @@ router.get("/:table", requireModule("financial", "view"), async (req, res) => {
   res.json(rows);
 });
 
-router.post("/:table", requireSuperAdmin, async (req, res) => {
+router.post("/:table", requireAdmin, async (req, res) => {
   const table = tableSchema.parse(req.params.table);
   let data: Record<string, any>;
   
@@ -84,7 +84,7 @@ router.post("/:table", requireSuperAdmin, async (req, res) => {
   }
 });
 
-router.patch("/:table/:id", requireSuperAdmin, async (req, res) => {
+router.patch("/:table/:id", requireAdmin, async (req, res) => {
   const table = tableSchema.parse(req.params.table);
   const id = z.string().regex(/^\d+$/).parse(req.params.id);
   
