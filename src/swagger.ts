@@ -10,6 +10,10 @@ const options: swaggerJsdoc.Options = {
     },
     servers: [
       {
+        url: 'https://infazys-api.onrender.com',
+        description: 'Production Server',
+      },
+      {
         url: 'http://localhost:3000',
         description: 'Development Server',
       },
