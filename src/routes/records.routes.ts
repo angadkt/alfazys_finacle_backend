@@ -481,6 +481,8 @@ router.post("/orders", async (req, res) => {
     txn: z.enum(["gateway", "usdt", "reverse"]).default("gateway"),
     order_date: z.string(),
     account_id: z.coerce.number().optional().nullable(),
+    transaction_through: z.string().optional().nullable(),
+    payment_status: z.string().optional().default("Pending"),
     note: z.string().optional().nullable()
   }).parse(req.body);
 
@@ -519,13 +521,15 @@ router.post("/orders", async (req, res) => {
     `INSERT INTO orders (
        buyer_id, party_id, receivers_data, receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
        txn, order_date, aed_amount, account_id, sale_rate, cost_rate, usdt_amount, inr_per_usdt,
-       inr_value, expected_profit_inr, note, status, created_by, verified_by, verified_at
+       inr_value, expected_profit_inr, note, status, created_by, verified_by, verified_at,
+       transaction_through, payment_status
      ) 
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING *`,
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25) RETURNING *`,
     [
       body.buyer_id, body.party_id, JSON.stringify(body.accounts), receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
       body.txn, body.order_date, total_aed, body.account_id, sale_rate, null, null, null,
-      total_inr, null, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at
+      total_inr, null, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at,
+      body.transaction_through || null, body.payment_status || 'Pending'
     ]
   );
   
