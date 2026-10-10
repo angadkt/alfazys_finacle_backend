@@ -20,7 +20,7 @@ router.get("/seed-cifs-temp", async (req, res) => {
       ALTER TABLE branches ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
       ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
 
-      INSERT INTO cif_types (id, name, is_active) VALUES
+      INSERT INTO cif_types (id, name, is_active) OVERRIDING SYSTEM VALUE VALUES
       (2, 'CUSTOMER', true),
       (3, 'EMPLOYEE', true),
       (4, 'OTHER', true),
