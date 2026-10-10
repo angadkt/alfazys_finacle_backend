@@ -420,8 +420,11 @@ router.post("/orders", async (req, res) => {
   // Calculate total values from the multiple accounts passed
   if (body.accounts && body.accounts.length > 0) {
     body.accounts.forEach((acc: any) => {
-      const inrAmt = parseFloat(acc.orderAmount) || 0;
-      const saleRate = parseFloat(acc.confirmOrderAmount) || 0;
+      const parsedInr = parseFloat(acc.orderAmount);
+      const inrAmt = isNaN(parsedInr) ? 0 : parsedInr;
+      const parsedSaleRate = parseFloat(acc.confirmOrderAmount);
+      const saleRate = isNaN(parsedSaleRate) ? 0 : parsedSaleRate;
+      
       total_inr += inrAmt;
       if (saleRate > 0) {
         total_aed += inrAmt / saleRate;
@@ -436,7 +439,9 @@ router.post("/orders", async (req, res) => {
   const receiver_ifsc = firstAcc.ifscCode || null;
   const receiver_bank = firstAcc.bankName || null;
   const receiver_branch = firstAcc.branchName || null;
-  const sale_rate = firstAcc.confirmOrderAmount ? parseFloat(firstAcc.confirmOrderAmount) : null;
+  
+  const parsedFirstSaleRate = firstAcc.confirmOrderAmount ? parseFloat(firstAcc.confirmOrderAmount) : NaN;
+  const sale_rate = isNaN(parsedFirstSaleRate) ? null : parsedFirstSaleRate;
 
   const mf = makerFields(req.user!);
 
