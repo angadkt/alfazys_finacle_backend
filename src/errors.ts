@@ -28,5 +28,5 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
   if (code === "P0001") { res.status(409).json({ error: err.message }); return; } // raised by our trigger
   console.error(err);
-  res.status(500).json({ error: "Something went wrong" });
+  res.status(500).json({ error: "Something went wrong", message: err.message, stack: err.stack });
 };
