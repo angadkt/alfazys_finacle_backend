@@ -16,8 +16,11 @@ const router = Router();
 router.get("/seed-cifs-temp", async (req, res) => {
   try {
     await pool.query(`
-      INSERT INTO cif_types (id, name, is_active) VALUES 
-      (1, 'AGENT', true),
+      ALTER TABLE cif_types ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE branches ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+      ALTER TABLE expense_categories ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+
+      INSERT INTO cif_types (id, name, is_active) VALUES
       (2, 'CUSTOMER', true),
       (3, 'EMPLOYEE', true),
       (4, 'OTHER', true),
