@@ -66,13 +66,16 @@ export const TABLES: Record<string, TableConfig> = {
   },
   credit_entries: {
     module: "financial",
-    editable: ["party_id", "entry_date", "aed_amount", "mode", "account_id", "utr_number", "customer_rate", "note"],
+    editable: ["party_id", "entry_date", "aed_amount", "mode", "account_id", "utr_number", "customer_rate", "note",
+      "beneficiary_name", "account_number", "ifsc_code", "bank_name", "branch_name", "utrs_data"],
     cleanupOnDelete: removeMovements("credit_entries"),
   },
   orders: {
     module: "financial",
-    editable: ["buyer_id", "txn", "order_date", "aed_amount", "account_id", "sale_rate", "cost_rate",
-      "usdt_amount", "usdt_rate_aed", "inr_per_usdt", "inr_value", "expected_profit_inr", "note"],
+    editable: ["buyer_id", "party_id", "txn", "order_date", "aed_amount", "account_id", "sale_rate", "cost_rate",
+      "usdt_amount", "usdt_rate_aed", "inr_per_usdt", "inr_value", "expected_profit_inr", "note",
+      "transaction_through", "payment_status", "receivers_data", "receiver_name", "receiver_account",
+      "receiver_ifsc", "receiver_bank", "receiver_branch"],
     cleanupOnDelete: removeMovements("orders"),
   },
   debit_entries: {

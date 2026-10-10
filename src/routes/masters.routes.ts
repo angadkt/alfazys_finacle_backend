@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { requireAuth, requireModule, requireAdmin } from "../auth/middleware";
+import { hasAccess } from "../auth/permissions";
 import { pool, tx } from "../db";
 import { HttpError } from "../errors";
 import { audit } from "../audit";
