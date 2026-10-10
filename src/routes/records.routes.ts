@@ -78,6 +78,9 @@ router.get("/seed-cifs-temp", async (req, res) => {
       ON CONFLICT (id) DO NOTHING;
 
       -- Ensure orders table has all columns
+      ALTER TABLE orders ALTER COLUMN buyer_id DROP NOT NULL;
+      ALTER TABLE orders DROP CONSTRAINT IF EXISTS gateway_needs_rates;
+      ALTER TABLE orders DROP CONSTRAINT IF EXISTS usdt_needs_fields;
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS party_id BIGINT REFERENCES parties(id);
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS receivers_data JSONB DEFAULT '[]';
       ALTER TABLE orders ADD COLUMN IF NOT EXISTS receiver_name TEXT;

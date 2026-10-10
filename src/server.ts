@@ -71,7 +71,10 @@ async function initDatabase() {
         (2, 'INDIA', true)
         ON CONFLICT (id) DO NOTHING;
 
-        ALTER TABLE orders ADD COLUMN IF NOT EXISTS party_id BIGINT REFERENCES parties(id);
+        ALTER TABLE orders ALTER COLUMN buyer_id DROP NOT NULL;
+      ALTER TABLE orders DROP CONSTRAINT IF EXISTS gateway_needs_rates;
+      ALTER TABLE orders DROP CONSTRAINT IF EXISTS usdt_needs_fields;
+      ALTER TABLE orders ADD COLUMN IF NOT EXISTS party_id BIGINT REFERENCES parties(id);
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS receivers_data JSONB DEFAULT '[]';
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS receiver_name TEXT;
         ALTER TABLE orders ADD COLUMN IF NOT EXISTS receiver_account TEXT;
