@@ -261,22 +261,34 @@ router.delete("/parties/:id", async (req, res) => {
  */
 router.post("/credit", async (req, res) => {
   const body = z.object({
-    party_id: z.coerce.number(),
+    party_id: z.coerce.number().optional().nullable(),
     entry_date: z.string(),
     aed_amount: z.coerce.number(),
     mode: z.string(),
-    account_id: z.coerce.number(),
+    account_id: z.coerce.number().optional().nullable(),
     customer_rate: z.coerce.number(),
     utr_number: z.string().optional().nullable(),
+    beneficiary_name: z.string().optional().nullable(),
+    account_number: z.string().optional().nullable(),
+    ifsc_code: z.string().optional().nullable(),
+    bank_name: z.string().optional().nullable(),
+    branch_name: z.string().optional().nullable(),
+    utrs_data: z.any().optional(),
     note: z.string().optional().nullable()
   }).parse(req.body);
 
   const mf = makerFields(req.user!);
   
   const { rows } = await pool.query(
-    `INSERT INTO credit_entries (party_id, entry_date, aed_amount, mode, account_id, customer_rate, utr_number, note, status, created_by, verified_by, verified_at) 
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING *`,
-    [body.party_id, body.entry_date, body.aed_amount, body.mode, body.account_id, body.customer_rate, body.utr_number, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at]
+    `INSERT INTO credit_entries (
+      party_id, entry_date, aed_amount, mode, account_id, customer_rate, utr_number, note, status, created_by, verified_by, verified_at,
+      beneficiary_name, account_number, ifsc_code, bank_name, branch_name, utrs_data
+     ) 
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) RETURNING *`,
+    [
+      body.party_id, body.entry_date, body.aed_amount, body.mode, body.account_id, body.customer_rate, body.utr_number, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at,
+      body.beneficiary_name, body.account_number, body.ifsc_code, body.bank_name, body.branch_name, JSON.stringify(body.utrs_data)
+    ]
   );
   
   await audit(pool, { userId: req.user!.id, action: "create", table: "credit_entries", recordId: rows[0].id, newData: rows[0], ip: req.ip });
@@ -390,34 +402,53 @@ router.delete("/credit/:id", async (req, res) => {
  */
 router.post("/orders", async (req, res) => {
   const body = z.object({
-    buyer_id: z.coerce.number(),
+    buyer_id: z.coerce.number().optional().nullable(),
+    party_id: z.coerce.number().optional().nullable(),
+    accounts: z.array(z.any()).default([]), // The array of beneficiaries
     txn: z.enum(["gateway", "usdt", "reverse"]).default("gateway"),
     order_date: z.string(),
-    aed_amount: z.coerce.number(),
     account_id: z.coerce.number().optional().nullable(),
-    sale_rate: z.coerce.number().optional().nullable(),
-    cost_rate: z.coerce.number().optional().nullable(),
-    usdt_amount: z.coerce.number().optional().nullable(),
-    inr_per_usdt: z.coerce.number().optional().nullable(),
     note: z.string().optional().nullable()
   }).parse(req.body);
 
-  let inr_value = 0;
-  let expected_profit_inr = null;
-
-  if (body.txn === "gateway") {
-    inr_value = body.aed_amount * (body.cost_rate || 0);
-    expected_profit_inr = ((body.cost_rate || 0) - (body.sale_rate || 0)) * body.aed_amount;
-  } else if (body.txn === "usdt") {
-    inr_value = (body.usdt_amount || 0) * (body.inr_per_usdt || 0);
+  let total_inr = 0;
+  let total_aed = 0;
+  
+  // Calculate total values from the multiple accounts passed
+  if (body.accounts && body.accounts.length > 0) {
+    body.accounts.forEach((acc: any) => {
+      const inrAmt = parseFloat(acc.orderAmount) || 0;
+      const saleRate = parseFloat(acc.confirmOrderAmount) || 0;
+      total_inr += inrAmt;
+      if (saleRate > 0) {
+        total_aed += inrAmt / saleRate;
+      }
+    });
   }
+
+  // Use the first account's details for the legacy scalar columns for easy viewing
+  const firstAcc = body.accounts[0] || {};
+  const receiver_name = firstAcc.clientName || null;
+  const receiver_account = firstAcc.accountNumber || null;
+  const receiver_ifsc = firstAcc.ifscCode || null;
+  const receiver_bank = firstAcc.bankName || null;
+  const receiver_branch = firstAcc.branchName || null;
+  const sale_rate = firstAcc.confirmOrderAmount ? parseFloat(firstAcc.confirmOrderAmount) : null;
 
   const mf = makerFields(req.user!);
 
   const { rows } = await pool.query(
-    `INSERT INTO orders (buyer_id, txn, order_date, aed_amount, account_id, sale_rate, cost_rate, usdt_amount, inr_per_usdt, inr_value, expected_profit_inr, note, status, created_by, verified_by, verified_at) 
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING *`,
-    [body.buyer_id, body.txn, body.order_date, body.aed_amount, body.account_id, body.sale_rate, body.cost_rate, body.usdt_amount, body.inr_per_usdt, inr_value, expected_profit_inr, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at]
+    `INSERT INTO orders (
+       buyer_id, party_id, receivers_data, receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
+       txn, order_date, aed_amount, account_id, sale_rate, cost_rate, usdt_amount, inr_per_usdt,
+       inr_value, expected_profit_inr, note, status, created_by, verified_by, verified_at
+     ) 
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) RETURNING *`,
+    [
+      body.buyer_id, body.party_id, JSON.stringify(body.accounts), receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
+      body.txn, body.order_date, total_aed, body.account_id, sale_rate, null, null, null,
+      total_inr, null, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at
+    ]
   );
   
   await audit(pool, { userId: req.user!.id, action: "create", table: "orders", recordId: rows[0].id, newData: rows[0], ip: req.ip });
@@ -435,16 +466,52 @@ router.post("/orders", async (req, res) => {
  *         description: List of order entries
  */
 router.get("/orders", async (req, res) => {
-  const { rows } = await pool.query(`
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.max(1, Math.min(100, parseInt(req.query.limit as string) || 20));
+  const search = req.query.search as string || "";
+  const offset = (page - 1) * limit;
+
+  let whereClause = "WHERE 1=1";
+  const params: any[] = [];
+
+  if (search) {
+    params.push(`%${search}%`);
+    whereClause += ` AND (
+      o.order_no ILIKE $1 OR 
+      o.receiver_name ILIKE $1 OR 
+      o.receiver_account ILIKE $1 OR 
+      o.receivers_data::text ILIKE $1 OR 
+      o.status ILIKE $1 OR 
+      TRIM(p.first_name || ' ' || COALESCE(p.last_name, '')) ILIKE $1
+    )`;
+  }
+
+  const countQuery = `
+    SELECT COUNT(*) 
+    FROM orders o 
+    LEFT JOIN parties p ON o.party_id = p.id 
+    ${whereClause}
+  `;
+  const totalRes = await pool.query(countQuery, params);
+  const total = parseInt(totalRes.rows[0].count);
+
+  const query = `
     SELECT o.*, 
            maker.full_name as created_by_name, 
-           checker.full_name as verified_by_name
+           checker.full_name as verified_by_name,
+           TRIM(p.first_name || ' ' || COALESCE(p.last_name, '')) as party_name
     FROM orders o
     LEFT JOIN users maker ON o.created_by = maker.id
     LEFT JOIN users checker ON o.verified_by = checker.id
+    LEFT JOIN parties p ON o.party_id = p.id
+    ${whereClause}
     ORDER BY o.created_at DESC
-  `);
-  res.json({ records: rows });
+    LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+  `;
+
+  const { rows } = await pool.query(query, [...params, limit, offset]);
+
+  res.json({ records: rows, total, page, limit });
 });
 
 /**

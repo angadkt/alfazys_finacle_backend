@@ -228,7 +228,14 @@ CREATE UNIQUE INDEX uq_credit_utr ON credit_entries(utr_number)
 CREATE TABLE orders (
   id                  BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   order_no            TEXT NOT NULL UNIQUE DEFAULT ('OR-' || lpad(nextval('order_no_seq')::text, 6, '0')),
-  buyer_id            BIGINT NOT NULL REFERENCES buyers(id),
+  buyer_id            BIGINT REFERENCES buyers(id),
+  party_id            BIGINT REFERENCES parties(id),
+  receivers_data      JSONB DEFAULT '[]',
+  receiver_name       TEXT,
+  receiver_account    TEXT,
+  receiver_ifsc       TEXT,
+  receiver_bank       TEXT,
+  receiver_branch     TEXT,
   txn                 txn_type NOT NULL DEFAULT 'gateway',
   order_date          DATE NOT NULL,
   aed_amount          NUMERIC(18,2) NOT NULL CHECK (aed_amount > 0),
@@ -238,7 +245,7 @@ CREATE TABLE orders (
   usdt_amount         NUMERIC(18,2),
   usdt_rate_aed       NUMERIC(12,6),
   inr_per_usdt        NUMERIC(12,6),
-  inr_value           NUMERIC(18,2) NOT NULL,                 -- INR added to buyer wallet
+  inr_value           NUMERIC(18,2) NOT NULL,                 -- INR amount requested/delivered
   expected_profit_inr NUMERIC(18,2),
   note                TEXT,
   status              record_status NOT NULL DEFAULT 'pending',
@@ -247,7 +254,7 @@ CREATE TABLE orders (
   verified_by         BIGINT REFERENCES users(id),
   verified_at         TIMESTAMPTZ,
   rejection_reason    TEXT,
-  CONSTRAINT gateway_needs_rates CHECK (txn <> 'gateway' OR (sale_rate IS NOT NULL AND cost_rate IS NOT NULL)),
+  CONSTRAINT gateway_needs_rates CHECK (txn <> 'gateway' OR sale_rate IS NOT NULL),
   CONSTRAINT usdt_needs_fields   CHECK (txn <> 'usdt' OR (usdt_amount IS NOT NULL AND inr_per_usdt IS NOT NULL)),
   CHECK (status <> 'rejected' OR rejection_reason IS NOT NULL)
 );
