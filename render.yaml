@@ -9,6 +9,8 @@ services:
     runtime: node
     region: singapore
     plan: free                          # Upgrade to starter before client use
+    branch: main
+    autoDeploy: true
     buildCommand: npm install --include=dev && npm run build
     startCommand: npm start
     healthCheckPath: /health
