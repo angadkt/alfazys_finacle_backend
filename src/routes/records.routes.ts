@@ -383,22 +383,25 @@ router.delete("/credit/:id", async (req, res) => {
  *         application/json:
  *           schema:
  *             type: object
- *             required:
- *               - buyer_id
- *               - txn
- *               - order_date
- *               - aed_amount
  *             properties:
- *               buyer_id: { type: string }
- *               txn: { type: string }
+ *               buyer_id: { type: number, nullable: true }
+ *               party_id: { type: number, nullable: true }
+ *               accounts:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     clientName: { type: string }
+ *                     accountNumber: { type: string }
+ *                     orderAmount: { type: string }
+ *                     confirmOrderAmount: { type: string }
+ *                     ifscCode: { type: string }
+ *                     bankName: { type: string }
+ *                     branchName: { type: string }
+ *               txn: { type: string, enum: ["gateway", "usdt", "reverse"], default: "gateway" }
  *               order_date: { type: string, format: date }
- *               aed_amount: { type: number }
- *               account_id: { type: string }
- *               sale_rate: { type: number }
- *               cost_rate: { type: number }
- *               usdt_amount: { type: number }
- *               inr_per_usdt: { type: number }
- *               note: { type: string }
+ *               account_id: { type: number, nullable: true }
+ *               note: { type: string, nullable: true }
  *     responses:
  *       201:
  *         description: Order entry created
