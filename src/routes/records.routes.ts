@@ -197,6 +197,20 @@ router.post("/parties", async (req, res) => {
 
   const mf = makerFields(req.user!);
 
+  // Deduplication guard: prevent identical party creation within a 10-second window
+  const recentDuplicate = await pool.query(
+    `SELECT * FROM parties 
+     WHERE first_name = $1 
+       AND last_name = $2 
+       AND contact_number = $3 
+       AND created_at >= NOW() - INTERVAL '10 seconds'
+     ORDER BY created_at DESC LIMIT 1`,
+    [body.first_name, body.last_name, body.contact_number]
+  );
+  if (recentDuplicate.rows.length > 0) {
+    return res.status(200).json({ record: recentDuplicate.rows[0], duplicatePrevented: true });
+  }
+
   const record = await tx(async (c) => {
     const { rows } = await c.query(
       `INSERT INTO parties (first_name, last_name, short_name, gender, nationality, contact_number, branch_id, cif_type_id, email, indian_number, whatsapp_number, status, created_by, verified_by, verified_at)
@@ -348,6 +362,21 @@ router.post("/credit", async (req, res) => {
   }).parse(req.body);
 
   const mf = makerFields(req.user!);
+
+  // Deduplication guard: prevent identical credit entries within a 10-second window
+  const recentCreditDuplicate = await pool.query(
+    `SELECT * FROM credit_entries 
+     WHERE entry_date = $1 
+       AND aed_amount = $2 
+       AND account_number IS NOT DISTINCT FROM $3 
+       AND beneficiary_name IS NOT DISTINCT FROM $4
+       AND created_at >= NOW() - INTERVAL '10 seconds'
+     ORDER BY created_at DESC LIMIT 1`,
+    [body.entry_date, body.aed_amount, body.account_number, body.beneficiary_name]
+  );
+  if (recentCreditDuplicate.rows.length > 0) {
+    return res.status(200).json({ record: recentCreditDuplicate.rows[0], duplicatePrevented: true });
+  }
   
   const { rows } = await pool.query(
     `INSERT INTO credit_entries (
@@ -517,6 +546,21 @@ router.post("/orders", async (req, res) => {
 
   const mf = makerFields(req.user!);
 
+  // Deduplication guard: prevent identical orders within a 10-second window
+  const recentOrderDuplicate = await pool.query(
+    `SELECT * FROM orders 
+     WHERE party_id IS NOT DISTINCT FROM $1 
+       AND order_date = $2 
+       AND inr_value = $3 
+       AND aed_amount = $4 
+       AND created_at >= NOW() - INTERVAL '10 seconds'
+     ORDER BY created_at DESC LIMIT 1`,
+    [body.party_id, body.order_date, total_inr, total_aed]
+  );
+  if (recentOrderDuplicate.rows.length > 0) {
+    return res.status(200).json({ record: recentOrderDuplicate.rows[0], duplicatePrevented: true });
+  }
+
   const { rows } = await pool.query(
     `INSERT INTO orders (
        buyer_id, party_id, receivers_data, receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
@@ -539,6 +583,109 @@ router.post("/orders", async (req, res) => {
 
 /**
  * @openapi
+ * /records/orders/{id}:
+ *   put:
+ *     summary: Update an Order Entry completely
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               buyer_id: { type: number, nullable: true }
+ *               party_id: { type: number, nullable: true }
+ *               accounts:
+ *                 type: array
+ *                 items: { type: object }
+ *               txn: { type: string }
+ *               order_date: { type: string, format: date }
+ *               account_id: { type: number, nullable: true }
+ *               transaction_through: { type: string, nullable: true }
+ *               payment_status: { type: string }
+ *               note: { type: string, nullable: true }
+ *     responses:
+ *       200:
+ *         description: Order entry updated
+ */
+router.put("/orders/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  
+  const body = z.object({
+    buyer_id: z.coerce.number().optional().nullable(),
+    party_id: z.coerce.number().optional().nullable(),
+    accounts: z.array(z.any()).default([]),
+    txn: z.enum(["gateway", "usdt", "reverse"]).default("gateway"),
+    order_date: z.string(),
+    account_id: z.coerce.number().optional().nullable(),
+    transaction_through: z.string().optional().nullable(),
+    payment_status: z.string().optional().default("Pending"),
+    note: z.string().optional().nullable()
+  }).parse(req.body);
+
+  let total_inr = 0;
+  let total_aed = 0;
+  
+  if (body.accounts && body.accounts.length > 0) {
+    body.accounts.forEach((acc: any) => {
+      const parsedInr = parseFloat(acc.orderAmount);
+      const inrAmt = isNaN(parsedInr) ? 0 : parsedInr;
+      const parsedSaleRate = parseFloat(acc.confirmOrderAmount);
+      const saleRate = isNaN(parsedSaleRate) ? 0 : parsedSaleRate;
+      
+      total_inr += inrAmt;
+      if (saleRate > 0) {
+        total_aed += inrAmt / saleRate;
+      }
+    });
+  }
+
+  const firstAcc = body.accounts[0] || {};
+  const receiver_name = firstAcc.clientName || null;
+  const receiver_account = firstAcc.accountNumber || null;
+  const receiver_ifsc = firstAcc.ifscCode || null;
+  const receiver_bank = firstAcc.bankName || null;
+  const receiver_branch = firstAcc.branchName || null;
+  
+  const parsedFirstSaleRate = firstAcc.confirmOrderAmount ? parseFloat(firstAcc.confirmOrderAmount) : NaN;
+  const sale_rate = isNaN(parsedFirstSaleRate) ? null : parsedFirstSaleRate;
+
+  // Retrieve old record for audit
+  const { rows: oldRows } = await pool.query(`SELECT * FROM orders WHERE id = $1`, [id]);
+  if (!oldRows[0]) {
+    res.status(404).json({ error: "Order not found" });
+    return;
+  }
+  
+  const mf = makerFields(req.user!);
+
+  const { rows } = await pool.query(
+    `UPDATE orders SET
+       buyer_id = $1, party_id = $2, receivers_data = $3, receiver_name = $4, receiver_account = $5, receiver_ifsc = $6, receiver_bank = $7, receiver_branch = $8,
+       txn = $9, order_date = $10, aed_amount = $11, account_id = $12, sale_rate = $13,
+       inr_value = $14, note = $15, status = $16, transaction_through = $17, payment_status = $18
+     WHERE id = $19 RETURNING *`,
+    [
+      body.buyer_id, body.party_id, JSON.stringify(body.accounts), receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
+      body.txn, body.order_date, total_aed, body.account_id, sale_rate,
+      total_inr, body.note, oldRows[0].status === 'verified' ? 'verified' : mf.status, body.transaction_through || null, body.payment_status || 'Pending',
+      id
+    ]
+  );
+  
+  await audit(pool, { userId: req.user!.id, action: "update", table: "orders", recordId: id, oldData: oldRows[0], newData: rows[0], ip: req.ip });
+  res.json({ record: rows[0] });
+});
+
+/**
+ * @openapi
  * /records/orders:
  *   get:
  *     summary: Get all Order Entries
@@ -551,6 +698,8 @@ router.get("/orders", async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.max(1, Math.min(100, parseInt(req.query.limit as string) || 20));
   const search = req.query.search as string || "";
+  const date = req.query.date as string || "";
+  const partyId = req.query.party_id as string || "";
   const offset = (page - 1) * limit;
 
   let whereClause = "WHERE 1=1";
@@ -558,14 +707,25 @@ router.get("/orders", async (req, res) => {
 
   if (search) {
     params.push(`%${search}%`);
+    const idx = params.length;
     whereClause += ` AND (
-      o.order_no ILIKE $1 OR 
-      o.receiver_name ILIKE $1 OR 
-      o.receiver_account ILIKE $1 OR 
-      o.receivers_data::text ILIKE $1 OR 
-      o.status ILIKE $1 OR 
-      TRIM(p.first_name || ' ' || COALESCE(p.last_name, '')) ILIKE $1
+      o.order_no ILIKE $${idx} OR 
+      o.receiver_name ILIKE $${idx} OR 
+      o.receiver_account ILIKE $${idx} OR 
+      o.receivers_data::text ILIKE $${idx} OR 
+      o.status ILIKE $${idx} OR 
+      TRIM(p.first_name || ' ' || COALESCE(p.last_name, '')) ILIKE $${idx}
     )`;
+  }
+
+  if (date) {
+    params.push(date);
+    whereClause += ` AND o.order_date = $${params.length}`;
+  }
+
+  if (partyId) {
+    params.push(partyId);
+    whereClause += ` AND o.party_id = $${params.length}`;
   }
 
   const countQuery = `
