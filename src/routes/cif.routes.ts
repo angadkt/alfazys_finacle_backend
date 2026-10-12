@@ -186,7 +186,7 @@ router.get("/:id", async (req, res) => {
   party.receivers = (await pool.query("SELECT * FROM receivers WHERE party_id = $1", [id])).rows;
   
   // Omit the encrypted field and hash when sending to frontend
-  const docs = await pool.query("SELECT id, doc_type, doc_number_last4, expiry_date, uploaded_at FROM party_documents WHERE party_id = $1", [id]);
+  const docs = await pool.query("SELECT id, doc_type, doc_number_last4, expiry_date, uploaded_at, mime_type, file_name FROM party_documents WHERE party_id = $1", [id]);
   party.documents = docs.rows;
   
   res.json(party);
@@ -234,6 +234,7 @@ router.post("/:id/documents", requireModule("financial", "edit"), upload.single(
   const mime = getMagicType(req.file.buffer);
   if (!mime) throw new HttpError(400, "Invalid file type. Only JPEG, PNG, WebP, and PDF are allowed.");
 
+  const file = req.file;
   const ext = mime.split('/')[1];
   const fileKey = await localDiskStorage.saveFile(req.file.buffer, ext);
 
@@ -249,9 +250,9 @@ router.post("/:id/documents", requireModule("financial", "edit"), upload.single(
     const result = await tx(async (c) => {
       const { rows } = await c.query(
         `INSERT INTO party_documents 
-         (party_id, doc_type, file_key, doc_number_enc, doc_number_last4, doc_number_hash, expiry_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *`,
-        [id, data.doc_type, fileKey, docEnc, docLast4, docHash, data.expiry_date || null]
+         (party_id, doc_type, file_key, doc_number_enc, doc_number_last4, doc_number_hash, expiry_date, file_data, mime_type, file_name)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
+        [id, data.doc_type, fileKey, docEnc, docLast4, docHash, data.expiry_date || null, file.buffer, mime, file.originalname || fileKey]
       );
       await audit(c, { userId: req.user!.id, action: "upload_document", table: "party_documents", recordId: rows[0].id, newData: { party_id: id, doc_type: data.doc_type }, ip: req.ip });
       return rows[0];
@@ -269,23 +270,32 @@ router.get("/:id/documents/:docId", async (req, res) => {
   const partyId = z.string().regex(/^\d+$/).parse(req.params.id);
   const docId = z.string().regex(/^\d+$/).parse(req.params.docId);
 
-  const { rows } = await pool.query("SELECT file_key FROM party_documents WHERE id = $1 AND party_id = $2", [docId, partyId]);
+  const { rows } = await pool.query(
+    "SELECT file_key, file_data, mime_type, file_name FROM party_documents WHERE id = $1 AND party_id = $2", 
+    [docId, partyId]
+  );
   if (!rows[0]) throw new HttpError(404, "Document not found");
 
-  const fileKey = rows[0].file_key;
-  let buffer: Buffer;
-  try {
-    buffer = await localDiskStorage.getFile(fileKey);
-  } catch (err) {
-    throw new HttpError(404, "File missing on disk");
+  let buffer: Buffer | null = rows[0].file_data;
+  let mime: string = rows[0].mime_type;
+
+  if (!buffer) {
+    const fileKey = rows[0].file_key;
+    try {
+      buffer = await localDiskStorage.getFile(fileKey);
+      mime = getMagicType(buffer) || 'application/octet-stream';
+    } catch (err) {
+      throw new HttpError(404, "File missing on disk");
+    }
   }
 
   await tx(async (c) => {
     await audit(c, { userId: req.user!.id, action: "view_document", table: "party_documents", recordId: docId, ip: req.ip });
   });
 
-  const mime = getMagicType(buffer) || 'application/octet-stream';
-  res.setHeader('Content-Type', mime);
+  const finalMime = mime || getMagicType(buffer) || 'application/octet-stream';
+  res.setHeader('Content-Type', finalMime);
+  res.setHeader('Content-Disposition', `inline; filename="${rows[0].file_name || 'document'}"`);
   res.send(buffer);
 });
 

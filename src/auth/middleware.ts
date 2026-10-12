@@ -21,7 +21,7 @@ declare global {
 export async function requireAuth(req: Request, _res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   const bearerToken = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : undefined;
-  const token = (req.cookies?.token as string | undefined) || bearerToken;
+  const token = (req.cookies?.token as string | undefined) || bearerToken || (req.query?.token as string | undefined);
   if (!token) throw new HttpError(401, "Please log in");
 
   let userId: string;

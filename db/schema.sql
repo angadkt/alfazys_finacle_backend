@@ -112,6 +112,9 @@ CREATE TABLE party_documents (
                   ('photo','aadhaar_front','aadhaar_back','pan','uae_id',
                    'passport_front','passport_back','signature')),
   file_key        TEXT NOT NULL,
+  file_data       BYTEA,
+  mime_type       TEXT,
+  file_name       TEXT,
   doc_number_enc  TEXT,           -- encrypted by the app
   doc_number_last4 TEXT,          -- for masked display
   doc_number_hash TEXT,           -- for duplicate check

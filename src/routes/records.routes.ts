@@ -98,6 +98,10 @@ router.get("/seed-cifs-temp", async (req, res) => {
       ALTER TABLE credit_entries ADD COLUMN IF NOT EXISTS bank_name TEXT;
       ALTER TABLE credit_entries ADD COLUMN IF NOT EXISTS branch_name TEXT;
       ALTER TABLE credit_entries ADD COLUMN IF NOT EXISTS utrs_data JSONB DEFAULT '[]';
+
+      ALTER TABLE party_documents ADD COLUMN IF NOT EXISTS file_data BYTEA;
+      ALTER TABLE party_documents ADD COLUMN IF NOT EXISTS mime_type TEXT;
+      ALTER TABLE party_documents ADD COLUMN IF NOT EXISTS file_name TEXT;
     `);
     res.send("<h1>Success! CIF Types, Branches, Orders, and Credit Entries schema updated & seeded.</h1>");
   } catch (err: any) {
