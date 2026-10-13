@@ -927,17 +927,20 @@ router.delete("/orders/:id", async (req, res) => {
 router.post("/received-aed", async (req, res) => {
   const body = z.object({
     aed_amount: z.number().positive(),
-    collection_staff: z.string().min(1),
+    collection_staff: z.string().min(1).optional(),
     mode_of_txn: z.string().min(1),
     cash_staff: z.string().optional(),
     remaining_amount: z.number().optional(),
+    entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   }).parse(req.body);
 
+  const entryDate = body.entry_date || new Date().toISOString().slice(0, 10);
+
   const { rows } = await pool.query(
-    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, entry_date, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [body.aed_amount, body.collection_staff, body.mode_of_txn, body.cash_staff || null, body.remaining_amount ?? null, req.user!.id]
+    [body.aed_amount, body.collection_staff || null, body.mode_of_txn, body.cash_staff || null, body.remaining_amount ?? null, entryDate, req.user!.id]
   );
 
   await audit(pool, {
@@ -967,16 +970,38 @@ router.get("/received-aed", async (req, res) => {
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
   const offset = (page - 1) * limit;
 
-  const countRes = await pool.query("SELECT count(*)::int AS total FROM received_aed");
+  const dateFilter = (req.query.date as string) || null;
+  const modeFilter = (req.query.mode_of_txn as string) || null;
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (dateFilter) {
+    params.push(dateFilter);
+    conditions.push(`ra.entry_date = $${params.length}`);
+  }
+  if (modeFilter) {
+    params.push(modeFilter);
+    conditions.push(`ra.mode_of_txn = $${params.length}`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+  const countRes = await pool.query(
+    `SELECT count(*)::int AS total FROM received_aed ra ${where}`,
+    params
+  );
   const total = countRes.rows[0].total;
 
+  const dataParams = [...params, limit, offset];
   const { rows } = await pool.query(
     `SELECT ra.*, u.full_name AS created_by_name
      FROM received_aed ra
      LEFT JOIN users u ON u.id = ra.created_by
-     ORDER BY ra.created_at DESC
-     LIMIT $1 OFFSET $2`,
-    [limit, offset]
+     ${where}
+     ORDER BY ra.entry_date DESC, ra.created_at DESC
+     LIMIT $${dataParams.length - 1} OFFSET $${dataParams.length}`,
+    dataParams
   );
 
   res.json({ records: rows, total, page, limit });
