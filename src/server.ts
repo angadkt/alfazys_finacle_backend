@@ -94,6 +94,26 @@ async function initDatabase() {
         ALTER TABLE party_documents ADD COLUMN IF NOT EXISTS file_data BYTEA;
         ALTER TABLE party_documents ADD COLUMN IF NOT EXISTS mime_type TEXT;
         ALTER TABLE party_documents ADD COLUMN IF NOT EXISTS file_name TEXT;
+
+        -- Received AED tracking table
+        CREATE TABLE IF NOT EXISTS received_aed (
+          id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          aed_amount        NUMERIC(18,2) NOT NULL CHECK (aed_amount > 0),
+          collection_staff  TEXT,
+          mode_of_txn       TEXT NOT NULL,
+          cash_staff        TEXT,
+          remaining_amount  NUMERIC(18,2),
+          entry_date        DATE NOT NULL DEFAULT CURRENT_DATE,
+          created_by        BIGINT NOT NULL REFERENCES users(id),
+          created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        ALTER TABLE received_aed ADD COLUMN IF NOT EXISTS entry_date DATE NOT NULL DEFAULT CURRENT_DATE;
+        ALTER TABLE received_aed ALTER COLUMN collection_staff DROP NOT NULL;
+
+        -- Relax daily rates sale_rate constraint
+        ALTER TABLE daily_rates ALTER COLUMN sale_rate DROP NOT NULL;
+        ALTER TABLE daily_rates DROP CONSTRAINT IF EXISTS daily_rates_sale_rate_check;
+        ALTER TABLE daily_rates ADD CONSTRAINT daily_rates_sale_rate_check CHECK (sale_rate IS NULL OR sale_rate > 0);
       `);
       console.log('✅ Migrations checked and executed');
     } catch (migErr: any) {
