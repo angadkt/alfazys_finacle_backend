@@ -912,6 +912,76 @@ router.delete("/orders/:id", async (req, res) => {
 
 
 
+// =============== Received AED ===============
+
+/**
+ * @openapi
+ * /records/received-aed:
+ *   post:
+ *     summary: Create a Received AED entry
+ *     tags: [Records]
+ *     responses:
+ *       201:
+ *         description: Entry created
+ */
+router.post("/received-aed", async (req, res) => {
+  const body = z.object({
+    aed_amount: z.number().positive(),
+    collection_staff: z.string().min(1),
+    mode_of_txn: z.string().min(1),
+    cash_staff: z.string().optional(),
+    remaining_amount: z.number().optional(),
+  }).parse(req.body);
+
+  const { rows } = await pool.query(
+    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING *`,
+    [body.aed_amount, body.collection_staff, body.mode_of_txn, body.cash_staff || null, body.remaining_amount ?? null, req.user!.id]
+  );
+
+  await audit(pool, {
+    userId: req.user!.id,
+    action: "create",
+    table: "received_aed",
+    recordId: rows[0].id,
+    newData: rows[0],
+    ip: req.ip,
+  });
+
+  res.status(201).json({ record: rows[0] });
+});
+
+/**
+ * @openapi
+ * /records/received-aed:
+ *   get:
+ *     summary: List Received AED entries
+ *     tags: [Records]
+ *     responses:
+ *       200:
+ *         description: Paginated list
+ */
+router.get("/received-aed", async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+  const offset = (page - 1) * limit;
+
+  const countRes = await pool.query("SELECT count(*)::int AS total FROM received_aed");
+  const total = countRes.rows[0].total;
+
+  const { rows } = await pool.query(
+    `SELECT ra.*, u.full_name AS created_by_name
+     FROM received_aed ra
+     LEFT JOIN users u ON u.id = ra.created_by
+     ORDER BY ra.created_at DESC
+     LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+
+  res.json({ records: rows, total, page, limit });
+});
+
 router.patch("/:table/:id", async (req, res) => {
   const { table, id } = params.parse(req.params);
   const data = dataSchema.parse(req.body);
