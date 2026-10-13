@@ -762,6 +762,106 @@ router.get("/orders", async (req, res) => {
 
 /**
  * @openapi
+ * /records/orders/{id}/receiver/{index}:
+ *   patch:
+ *     summary: Update payment status of a single receiver within an order
+ *     tags: [Records]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: index
+ *         required: true
+ *         schema:
+ *           type: integer
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               payment_status:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Receiver payment status updated
+ */
+router.patch("/orders/:id/receiver/:index", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  const recIndex = parseInt(req.params.index);
+  const { payment_status } = z.object({
+    payment_status: z.string().min(1)
+  }).parse(req.body);
+
+  if (isNaN(recIndex) || recIndex < 0) {
+    res.status(400).json({ message: "Invalid receiver index" });
+    return;
+  }
+
+  // Fetch current order
+  const { rows: orderRows } = await pool.query(
+    "SELECT receivers_data FROM orders WHERE id = $1",
+    [id]
+  );
+  if (orderRows.length === 0) {
+    res.status(404).json({ message: "Order not found" });
+    return;
+  }
+
+  let recs: any[] = orderRows[0].receivers_data;
+  if (typeof recs === "string") {
+    try { recs = JSON.parse(recs); } catch { recs = []; }
+  }
+  if (!Array.isArray(recs) || recIndex >= recs.length) {
+    res.status(400).json({ message: "Receiver index out of range" });
+    return;
+  }
+
+  // Update the specific receiver's payment_status
+  recs[recIndex] = { ...recs[recIndex], payment_status };
+
+  // Compute aggregate order-level payment_status
+  const statuses = recs.map((r: any) => (r.payment_status || "Pending").toLowerCase());
+  const allPaid = statuses.every((s: string) => s === "paid");
+  const nonePaid = statuses.every((s: string) => s !== "paid");
+  const aggregateStatus = allPaid ? "Paid" : nonePaid ? "Pending" : "Partial";
+
+  // Update inside a transaction, with the verified-record guard lifted
+  const { updated: updatedRow } = await tx(async (c) => {
+    // Allow updating a verified order (same as makerChecker admin path)
+    await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
+
+    const { rows: updated } = await c.query(
+      `UPDATE orders
+       SET receivers_data = $1::jsonb,
+           payment_status = $2
+       WHERE id = $3
+       RETURNING *`,
+      [JSON.stringify(recs), aggregateStatus, id]
+    );
+
+    await audit(c, {
+      userId: req.user!.id,
+      action: "update",
+      table: "orders",
+      recordId: id,
+      oldData: orderRows[0],
+      newData: updated[0],
+      ip: req.ip
+    });
+
+    return { updated: updated[0] };
+  });
+
+  res.json({ record: updatedRow });
+});
+
+/**
+ * @openapi
  * /records/orders/{id}:
  *   patch:
  *     summary: Edit an Order Entry
@@ -809,6 +909,8 @@ router.delete("/orders/:id", async (req, res) => {
   const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
   res.json(await deleteOrRequest(req.user!, "orders", id, req.ip));
 });
+
+
 
 router.patch("/:table/:id", async (req, res) => {
   const { table, id } = params.parse(req.params);
