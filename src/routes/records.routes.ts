@@ -770,6 +770,80 @@ router.get("/orders", async (req, res) => {
   res.json({ records: rows, total, page, limit });
 });
 
+router.put("/received-aed/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+  const body = z.object({
+    aed_amount: z.number().positive(),
+    collection_staff: z.string().min(1).optional().nullable(),
+    mode_of_txn: z.string().min(1),
+    cash_staff: z.string().optional().nullable(),
+    remaining_amount: z.number().optional().nullable(),
+    entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  }).parse(req.body);
+
+  const entryDate = body.entry_date || new Date().toISOString().slice(0, 10);
+
+  const oldRes = await pool.query("SELECT * FROM received_aed WHERE id = $1", [id]);
+  if (!oldRes.rows[0]) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  const { rows } = await pool.query(
+    `UPDATE received_aed
+     SET aed_amount = $1,
+         collection_staff = $2,
+         mode_of_txn = $3,
+         cash_staff = $4,
+         remaining_amount = $5,
+         entry_date = $6
+     WHERE id = $7
+     RETURNING *`,
+    [
+      body.aed_amount,
+      body.collection_staff || null,
+      body.mode_of_txn,
+      body.cash_staff || null,
+      body.remaining_amount ?? null,
+      entryDate,
+      id
+    ]
+  );
+
+  await audit(pool, {
+    userId: req.user!.id,
+    action: "update",
+    table: "received_aed",
+    recordId: id,
+    oldData: oldRes.rows[0],
+    newData: rows[0],
+    ip: req.ip,
+  });
+
+  res.json({ record: rows[0] });
+});
+
+router.delete("/received-aed/:id", async (req, res) => {
+  const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
+
+  const oldRes = await pool.query("SELECT * FROM received_aed WHERE id = $1", [id]);
+  if (!oldRes.rows[0]) {
+    return res.status(404).json({ error: "Record not found" });
+  }
+
+  await pool.query("DELETE FROM received_aed WHERE id = $1", [id]);
+
+  await audit(pool, {
+    userId: req.user!.id,
+    action: "delete",
+    table: "received_aed",
+    recordId: id,
+    oldData: oldRes.rows[0],
+    ip: req.ip,
+  });
+
+  res.json({ success: true, message: "Record deleted" });
+});
+
 /**
  * @openapi
  * /records/orders/{id}/receiver/{index}:
