@@ -565,6 +565,16 @@ router.post("/orders", async (req, res) => {
     return res.status(200).json({ record: recentOrderDuplicate.rows[0], duplicatePrevented: true });
   }
 
+  // Check if daily cost rate exists for this order date
+  const dailyRateRes = await pool.query(
+    `SELECT cost_rate FROM daily_rates WHERE rate_date =  LIMIT 1`,
+    [body.order_date]
+  );
+  const cost_rate = dailyRateRes.rows[0] ? parseFloat(dailyRateRes.rows[0].cost_rate) : null;
+  const expected_profit_inr = (cost_rate && total_aed > 0) 
+    ? Math.round(((cost_rate * total_aed) - total_inr) * 100) / 100 
+    : null;
+
   const { rows } = await pool.query(
     `INSERT INTO orders (
        buyer_id, party_id, receivers_data, receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
@@ -575,8 +585,8 @@ router.post("/orders", async (req, res) => {
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25) RETURNING *`,
     [
       body.buyer_id, body.party_id, JSON.stringify(body.accounts), receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
-      body.txn, body.order_date, total_aed, body.account_id, sale_rate, null, null, null,
-      total_inr, null, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at,
+      body.txn, body.order_date, total_aed, body.account_id, sale_rate, cost_rate, null, null,
+      total_inr, expected_profit_inr, body.note, mf.status, mf.created_by, mf.verified_by, mf.verified_at,
       body.transaction_through || null, body.payment_status || 'Pending'
     ]
   );
@@ -1005,6 +1015,126 @@ router.get("/received-aed", async (req, res) => {
   );
 
   res.json({ records: rows, total, page, limit });
+});
+
+router.get("/cost-rate", async (req, res) => {
+  const dateStr = (req.query.date as string) || new Date().toISOString().slice(0, 10);
+
+  const rateRes = await pool.query(
+    "SELECT * FROM daily_rates WHERE rate_date = $1 LIMIT 1",
+    [dateStr]
+  );
+  const savedRate = rateRes.rows[0] || null;
+
+  const aggRes = await pool.query(
+    "SELECT COUNT(*)::int as order_count, COALESCE(SUM(aed_amount), 0)::numeric as total_aed, COALESCE(SUM(inr_value), 0)::numeric as total_inr FROM orders WHERE order_date = $1",
+    [dateStr]
+  );
+  const agg = aggRes.rows[0];
+  const orderCount = parseInt(agg.order_count) || 0;
+  const totalAed = parseFloat(agg.total_aed) || 0;
+  const totalInr = parseFloat(agg.total_inr) || 0;
+  const avgSaleRate = totalAed > 0 ? (totalInr / totalAed) : 0;
+
+  const costRate = savedRate ? parseFloat(savedRate.cost_rate) : null;
+  let profitInr = 0;
+  let profitAed = 0;
+
+  if (costRate && totalAed > 0) {
+    profitInr = (totalAed * costRate) - totalInr;
+    profitAed = costRate > 0 ? profitInr / costRate : 0;
+  }
+
+  res.json({
+    date: dateStr,
+    cost_rate: costRate,
+    sale_rate: savedRate && savedRate.sale_rate ? parseFloat(savedRate.sale_rate) : avgSaleRate,
+    has_saved_rate: !!savedRate,
+    summary: {
+      order_count: orderCount,
+      total_aed: totalAed,
+      total_inr: totalInr,
+      avg_sale_rate: avgSaleRate,
+      profit_inr: profitInr,
+      profit_aed: profitAed
+    }
+  });
+});
+
+router.post("/cost-rate", async (req, res) => {
+  const bodySchema = z.object({
+    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Invalid date format (YYYY-MM-DD)"),
+    cost_rate: z.number().positive("Cost rate must be greater than 0")
+  });
+
+  const parsed = bodySchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: "Invalid data", details: parsed.error.issues });
+  }
+
+  const { date: dateStr, cost_rate } = parsed.data;
+  const mf = makerFields(req.user!);
+
+  const aggRes = await pool.query(
+    "SELECT COUNT(*)::int as order_count, COALESCE(SUM(aed_amount), 0)::numeric as total_aed, COALESCE(SUM(inr_value), 0)::numeric as total_inr FROM orders WHERE order_date = $1",
+    [dateStr]
+  );
+  const totalAed = parseFloat(aggRes.rows[0].total_aed) || 0;
+  const totalInr = parseFloat(aggRes.rows[0].total_inr) || 0;
+  const orderCount = parseInt(aggRes.rows[0].order_count) || 0;
+  const avgSaleRate = totalAed > 0 ? (totalInr / totalAed) : null;
+
+  const { upsertRateRes, updateOrdersRes } = await tx(async (c) => {
+    await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
+
+    const upsertRateRes = await c.query(
+      `INSERT INTO daily_rates (rate_date, cost_rate, sale_rate, status, created_by, verified_by, verified_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (rate_date)
+       DO UPDATE SET 
+         cost_rate = EXCLUDED.cost_rate,
+         sale_rate = COALESCE(EXCLUDED.sale_rate, daily_rates.sale_rate),
+         status = EXCLUDED.status,
+         verified_by = EXCLUDED.verified_by,
+         verified_at = EXCLUDED.verified_at
+       RETURNING *`,
+      [dateStr, cost_rate, avgSaleRate, mf.status, mf.created_by, mf.verified_by, mf.verified_at]
+    );
+
+    const updateOrdersRes = await c.query(
+      "UPDATE orders SET cost_rate = $1, expected_profit_inr = ROUND(($1 * aed_amount) - inr_value, 2) WHERE order_date = $2 RETURNING id",
+      [cost_rate, dateStr]
+    );
+
+    return { upsertRateRes, updateOrdersRes };
+  });
+
+  const profitInr = (totalAed * cost_rate) - totalInr;
+  const profitAed = cost_rate > 0 ? profitInr / cost_rate : 0;
+
+  await audit(pool, {
+    userId: req.user!.id,
+    action: "upsert_cost_rate",
+    table: "daily_rates",
+    recordId: upsertRateRes.rows[0].id,
+    newData: { date: dateStr, cost_rate, updated_orders_count: updateOrdersRes.rowCount },
+    ip: req.ip
+  });
+
+  res.json({
+    success: true,
+    message: "Cost rate updated successfully",
+    rate: upsertRateRes.rows[0],
+    updated_orders_count: updateOrdersRes.rowCount,
+    summary: {
+      order_count: orderCount,
+      total_aed: totalAed,
+      total_inr: totalInr,
+      avg_sale_rate: avgSaleRate || 0,
+      profit_inr: profitInr,
+      profit_aed: profitAed
+    }
+  });
 });
 
 router.patch("/:table/:id", async (req, res) => {
