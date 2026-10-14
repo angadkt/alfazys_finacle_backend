@@ -1099,6 +1099,7 @@ router.get("/received-aed", async (req, res) => {
 
   const dateFilter = (req.query.date as string) || null;
   const modeFilter = (req.query.mode_of_txn as string) || null;
+  const agentFilter = (req.query.agent_customer as string) || (req.query.agent as string) || null;
 
   const conditions: string[] = [];
   const params: any[] = [];
@@ -1111,14 +1112,19 @@ router.get("/received-aed", async (req, res) => {
     params.push(modeFilter);
     conditions.push(`ra.mode_of_txn = $${params.length}`);
   }
+  if (agentFilter) {
+    params.push(`%${agentFilter}%`);
+    conditions.push(`ra.agent_customer ILIKE $${params.length}`);
+  }
 
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
 
   const countRes = await pool.query(
-    `SELECT count(*)::int AS total FROM received_aed ra ${where}`,
+    `SELECT count(*)::int AS total, COALESCE(SUM(ra.aed_amount), 0)::numeric AS total_aed_sum FROM received_aed ra ${where}`,
     params
   );
   const total = countRes.rows[0].total;
+  const totalAedSum = parseFloat(countRes.rows[0].total_aed_sum) || 0;
 
   const dataParams = [...params, limit, offset];
   const { rows } = await pool.query(
@@ -1131,7 +1137,7 @@ router.get("/received-aed", async (req, res) => {
     dataParams
   );
 
-  res.json({ records: rows, total, page, limit });
+  res.json({ records: rows, total, totalAedSum, page, limit });
 });
 
 router.get("/cost-rate", async (req, res) => {
