@@ -809,6 +809,7 @@ router.put("/received-aed/:id", async (req, res) => {
     cash_staff: z.string().optional().nullable(),
     remaining_amount: z.number().optional().nullable(),
     entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    agent_customer: z.string().optional().nullable(),
   }).parse(req.body);
 
   const entryDate = body.entry_date || new Date().toISOString().slice(0, 10);
@@ -825,8 +826,9 @@ router.put("/received-aed/:id", async (req, res) => {
          mode_of_txn = $3,
          cash_staff = $4,
          remaining_amount = $5,
-         entry_date = $6
-     WHERE id = $7
+         entry_date = $6,
+         agent_customer = $7
+     WHERE id = $8
      RETURNING *`,
     [
       body.aed_amount,
@@ -835,6 +837,7 @@ router.put("/received-aed/:id", async (req, res) => {
       body.cash_staff || null,
       body.remaining_amount ?? null,
       entryDate,
+      body.agent_customer ? body.agent_customer.trim() : null,
       id
     ]
   );
@@ -1046,15 +1049,25 @@ router.post("/received-aed", async (req, res) => {
     cash_staff: z.string().optional(),
     remaining_amount: z.number().optional(),
     entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    agent_customer: z.string().optional().nullable(),
   }).parse(req.body);
 
   const entryDate = body.entry_date || new Date().toISOString().slice(0, 10);
 
   const { rows } = await pool.query(
-    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, entry_date, created_by)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, entry_date, created_by, agent_customer)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
-    [body.aed_amount, body.collection_staff || null, body.mode_of_txn, body.cash_staff || null, body.remaining_amount ?? null, entryDate, req.user!.id]
+    [
+      body.aed_amount,
+      body.collection_staff || null,
+      body.mode_of_txn,
+      body.cash_staff || null,
+      body.remaining_amount ?? null,
+      entryDate,
+      req.user!.id,
+      body.agent_customer ? body.agent_customer.trim() : null
+    ]
   );
 
   await audit(pool, {
