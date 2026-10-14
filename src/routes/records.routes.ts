@@ -680,22 +680,52 @@ router.put("/orders/:id", async (req, res) => {
   
   const mf = makerFields(req.user!);
 
-  const { rows } = await pool.query(
-    `UPDATE orders SET
-       buyer_id = $1, party_id = $2, receivers_data = $3, receiver_name = $4, receiver_account = $5, receiver_ifsc = $6, receiver_bank = $7, receiver_branch = $8,
-       txn = $9, order_date = $10, aed_amount = $11, account_id = $12, sale_rate = $13,
-       inr_value = $14, note = $15, status = $16, transaction_through = $17, payment_status = $18
-     WHERE id = $19 RETURNING *`,
-    [
-      body.buyer_id, body.party_id, JSON.stringify(body.accounts), receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
-      body.txn, body.order_date, total_aed, body.account_id, sale_rate,
-      total_inr, body.note, oldRows[0].status === 'verified' ? 'verified' : mf.status, body.transaction_through || null, body.payment_status || 'Pending',
-      id
-    ]
+  // Check if daily cost rate exists for this order date
+  const dailyRateRes = await pool.query(
+    `SELECT cost_rate FROM daily_rates WHERE rate_date = $1 LIMIT 1`,
+    [body.order_date]
   );
-  
-  await audit(pool, { userId: req.user!.id, action: "update", table: "orders", recordId: id, oldData: oldRows[0], newData: rows[0], ip: req.ip });
-  res.json({ record: rows[0] });
+  const cost_rate = dailyRateRes.rows[0]
+    ? parseFloat(dailyRateRes.rows[0].cost_rate)
+    : (oldRows[0].cost_rate ? parseFloat(oldRows[0].cost_rate) : null);
+  const expected_profit_inr = (cost_rate && total_aed > 0)
+    ? Math.round(((cost_rate * total_aed) - total_inr) * 100) / 100
+    : null;
+
+  // Update inside a transaction, with the verified-record guard lifted
+  const { updated: updatedRow } = await tx(async (c) => {
+    await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
+
+    const { rows: updated } = await c.query(
+      `UPDATE orders SET
+         buyer_id = $1, party_id = $2, receivers_data = $3, receiver_name = $4, receiver_account = $5, receiver_ifsc = $6, receiver_bank = $7, receiver_branch = $8,
+         txn = $9, order_date = $10, aed_amount = $11, account_id = $12, sale_rate = $13,
+         inr_value = $14, note = $15, status = $16, transaction_through = $17, payment_status = $18,
+         cost_rate = $19, expected_profit_inr = $20
+       WHERE id = $21 RETURNING *`,
+      [
+        body.buyer_id, body.party_id, JSON.stringify(body.accounts), receiver_name, receiver_account, receiver_ifsc, receiver_bank, receiver_branch,
+        body.txn, body.order_date, total_aed, body.account_id, sale_rate,
+        total_inr, body.note, oldRows[0].status === 'verified' ? 'verified' : mf.status, body.transaction_through || null, body.payment_status || 'Pending',
+        cost_rate, expected_profit_inr,
+        id
+      ]
+    );
+
+    await audit(c, {
+      userId: req.user!.id,
+      action: "update",
+      table: "orders",
+      recordId: id,
+      oldData: oldRows[0],
+      newData: updated[0],
+      ip: req.ip
+    });
+
+    return { updated: updated[0] };
+  });
+
+  res.json({ record: updatedRow });
 });
 
 /**
