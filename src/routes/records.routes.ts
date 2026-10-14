@@ -567,7 +567,7 @@ router.post("/orders", async (req, res) => {
 
   // Check if daily cost rate exists for this order date
   const dailyRateRes = await pool.query(
-    `SELECT cost_rate FROM daily_rates WHERE rate_date =  LIMIT 1`,
+    `SELECT cost_rate FROM daily_rates WHERE rate_date = $1 LIMIT 1`,
     [body.order_date]
   );
   const cost_rate = dailyRateRes.rows[0] ? parseFloat(dailyRateRes.rows[0].cost_rate) : null;
