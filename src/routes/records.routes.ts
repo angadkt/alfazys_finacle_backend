@@ -910,8 +910,9 @@ router.delete("/received-aed/:id", async (req, res) => {
 router.patch("/orders/:id/receiver/:index", async (req, res) => {
   const { id } = z.object({ id: z.string().regex(/^\d+$/) }).parse(req.params);
   const recIndex = parseInt(req.params.index);
-  const { payment_status } = z.object({
-    payment_status: z.string().min(1)
+  const { payment_status, paid_amount } = z.object({
+    payment_status: z.string().min(1),
+    paid_amount: z.union([z.number(), z.string()]).optional().nullable()
   }).parse(req.body);
 
   if (isNaN(recIndex) || recIndex < 0) {
@@ -938,14 +939,27 @@ router.patch("/orders/:id/receiver/:index", async (req, res) => {
     return;
   }
 
-  // Update the specific receiver's payment_status
-  recs[recIndex] = { ...recs[recIndex], payment_status };
+  let numericPaid = 0;
+  if (paid_amount !== undefined && paid_amount !== null && paid_amount !== "") {
+    numericPaid = typeof paid_amount === "number" ? paid_amount : parseFloat(String(paid_amount).replace(/,/g, ""));
+    if (isNaN(numericPaid) || numericPaid < 0) numericPaid = 0;
+  } else if (payment_status.toLowerCase() === "paid") {
+    numericPaid = parseFloat(String(recs[recIndex]?.orderAmount || 0).replace(/,/g, "")) || 0;
+  } else if (payment_status.toLowerCase() === "pending" || payment_status.toLowerCase() === "cancelled") {
+    numericPaid = 0;
+  } else {
+    numericPaid = parseFloat(String(recs[recIndex]?.paid_amount || 0).replace(/,/g, "")) || 0;
+  }
+
+  // Update the specific receiver's payment_status and paid_amount
+  recs[recIndex] = { ...recs[recIndex], payment_status, paid_amount: numericPaid };
 
   // Compute aggregate order-level payment_status
   const statuses = recs.map((r: any) => (r.payment_status || "Pending").toLowerCase());
   const allPaid = statuses.every((s: string) => s === "paid");
-  const nonePaid = statuses.every((s: string) => s !== "paid");
-  const aggregateStatus = allPaid ? "Paid" : nonePaid ? "Pending" : "Partial";
+  const nonePaid = statuses.every((s: string) => s === "pending" || s === "cancelled");
+  const hasPartial = statuses.some((s: string) => s === "partial") || (!allPaid && !nonePaid);
+  const aggregateStatus = allPaid ? "Paid" : hasPartial ? "Partial" : "Pending";
 
   // Update inside a transaction, with the verified-record guard lifted
   const { updated: updatedRow } = await tx(async (c) => {
