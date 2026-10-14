@@ -1260,6 +1260,62 @@ router.post("/cost-rate", async (req, res) => {
   });
 });
 
+router.get("/beneficiaries", async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT DISTINCT
+        TRIM(client_name) AS client_name,
+        TRIM(account_number) AS account_number,
+        UPPER(TRIM(ifsc_code)) AS ifsc_code,
+        TRIM(bank_name) AS bank_name,
+        TRIM(branch_name) AS branch_name,
+        TRIM(servicer) AS servicer,
+        party_id
+      FROM (
+        SELECT 
+          COALESCE(r->>'clientName', o.receiver_name) AS client_name,
+          COALESCE(r->>'accountNumber', o.receiver_account) AS account_number,
+          COALESCE(r->>'ifscCode', o.receiver_ifsc) AS ifsc_code,
+          COALESCE(r->>'bankName', o.receiver_bank) AS bank_name,
+          COALESCE(r->>'branchName', o.receiver_branch) AS branch_name,
+          r->>'servicer' AS servicer,
+          o.party_id
+        FROM orders o
+        LEFT JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(o.receivers_data) = 'array' THEN o.receivers_data ELSE '[]'::jsonb END) r ON true
+        WHERE COALESCE(r->>'clientName', o.receiver_name) IS NOT NULL 
+           OR COALESCE(r->>'accountNumber', o.receiver_account) IS NOT NULL
+        UNION
+        SELECT 
+          name AS client_name,
+          account_no AS account_number,
+          ifsc AS ifsc_code,
+          bank_name,
+          NULL AS branch_name,
+          NULL AS servicer,
+          party_id
+        FROM receivers
+        UNION
+        SELECT
+          beneficiary_name AS client_name,
+          account_number,
+          ifsc_code,
+          bank_name,
+          branch_name,
+          NULL AS servicer,
+          NULL AS party_id
+        FROM credit_entries
+        WHERE beneficiary_name IS NOT NULL OR account_number IS NOT NULL
+      ) sub
+      WHERE (client_name IS NOT NULL AND client_name <> '')
+         OR (account_number IS NOT NULL AND account_number <> '')
+      ORDER BY client_name ASC NULLS LAST
+    `);
+    res.json({ beneficiaries: rows });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to fetch beneficiaries", message: err.message });
+  }
+});
+
 router.patch("/:table/:id", async (req, res) => {
   const { table, id } = params.parse(req.params);
   const data = dataSchema.parse(req.body);
