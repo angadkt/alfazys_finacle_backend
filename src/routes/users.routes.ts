@@ -1,3 +1,4 @@
+import { sendStaffCredentialsEmail } from "../services/mailer";
 import { Router } from "express";
 import { z } from "zod";
 import { audit } from "../audit";
