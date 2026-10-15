@@ -23,10 +23,6 @@ const USER_FIELDS = "id, full_name, email, role, is_active, created_at";
  * /users/staff:
  *   get:
  *     summary: Get all staff members
- *     tags: [Users]
- *     responses:
- *       200:
- *         description: List of staff members
  */
 router.get("/staff", async (_req, res) => {
   const { rows } = await pool.query(
@@ -42,7 +38,8 @@ router.get("/staff", async (_req, res) => {
 router.get("/mailer/status", async (_req, res) => {
   const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp.gmail.com";
   const user = process.env.SMTP_USER || process.env.EMAIL_USER;
-  const hasPass = Boolean(process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD);
+  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
+  const hasPass = Boolean(rawPass && rawPass.trim());
   res.json({
     smtpConfigured: Boolean(user && hasPass),
     host,
@@ -65,8 +62,7 @@ router.get("/", async (_req, res) => {
  * @openapi
  * /users:
  *   post:
- *     summary: Create a new Staff user and send password via email
- *     tags: [Users]
+ *     summary: Create or re-provision a Staff user and dispatch credentials via SMTP
  */
 router.post("/", async (req, res) => {
   const body = z.object({
@@ -78,27 +74,65 @@ router.post("/", async (req, res) => {
     sendEmail: z.boolean().optional().default(true),
   }).parse(req.body);
 
-  const user = await tx(async (c) => {
-    const { rows } = await c.query(
-      `INSERT INTO users (full_name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING ${USER_FIELDS}`,
-      [body.fullName, body.email, await hashPassword(body.password), body.role]
-    );
-    for (const m of MODULES) {
-      await c.query(
-        "INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, $3)",
-        [rows[0].id, m, body.permissions?.[m] ?? "none"]
-      );
+  const existing = await pool.query(
+    "SELECT id, role, is_active FROM users WHERE email = $1",
+    [body.email]
+  );
+
+  let user: any;
+  if (existing.rows[0]) {
+    const existingUser = existing.rows[0];
+    if (existingUser.role !== "staff") {
+      throw new HttpError(400, "An account with this email exists with role: " + existingUser.role);
     }
-    await audit(c, {
-      userId: req.user!.id,
-      action: "create_user",
-      table: "users",
-      recordId: rows[0].id,
-      newData: { email: body.email, role: body.role, permissions: body.permissions ?? {} },
-      ip: req.ip
+    // Update existing staff member with new credentials and activate
+    user = await tx(async (c) => {
+      const { rows } = await c.query(
+        `UPDATE users SET full_name = $2, password_hash = $3, is_active = true, role = 'staff'
+         WHERE id = $1 RETURNING ${USER_FIELDS}`,
+        [existingUser.id, body.fullName, await hashPassword(body.password)]
+      );
+      for (const m of MODULES) {
+        await c.query(
+          `INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, module) DO UPDATE SET level = EXCLUDED.level`,
+          [existingUser.id, m, body.permissions?.[m] ?? "none"]
+        );
+      }
+      await audit(c, {
+        userId: req.user!.id,
+        action: "reprovision_user",
+        table: "users",
+        recordId: existingUser.id,
+        newData: { email: body.email, role: body.role, permissions: body.permissions ?? {} },
+        ip: req.ip
+      });
+      return rows[0];
     });
-    return rows[0];
-  });
+  } else {
+    // Insert new staff member
+    user = await tx(async (c) => {
+      const { rows } = await c.query(
+        `INSERT INTO users (full_name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING ${USER_FIELDS}`,
+        [body.fullName, body.email, await hashPassword(body.password), body.role]
+      );
+      for (const m of MODULES) {
+        await c.query(
+          "INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, $3)",
+          [rows[0].id, m, body.permissions?.[m] ?? "none"]
+        );
+      }
+      await audit(c, {
+        userId: req.user!.id,
+        action: "create_user",
+        table: "users",
+        recordId: rows[0].id,
+        newData: { email: body.email, role: body.role, permissions: body.permissions ?? {} },
+        ip: req.ip
+      });
+      return rows[0];
+    });
+  }
 
   let mailResult = null;
   let emailDispatched = false;
@@ -158,6 +192,49 @@ router.put("/:id/permissions", async (req, res) => {
     await audit(c, { userId: req.user!.id, action: "set_permissions", table: "users", recordId: id, newData: perms, ip: req.ip });
   });
   res.json({ ok: true });
+});
+
+router.delete("/by-email/:email", async (req, res) => {
+  const email = req.params.email.toLowerCase().trim();
+  const u = await pool.query("SELECT id, role FROM users WHERE email = $1", [email]);
+  if (!u.rowCount) {
+    return res.json({ ok: true, message: "User not found (already deleted)" });
+  }
+  const id = String(u.rows[0].id);
+  if (id === req.user!.id) {
+    throw new HttpError(400, "You cannot delete your own account");
+  }
+
+  try {
+    await tx(async (c) => {
+      await c.query("DELETE FROM user_permissions WHERE user_id = $1", [id]);
+      await c.query("DELETE FROM users WHERE id = $1", [id]);
+      await audit(c, { userId: req.user!.id, action: "delete_user", table: "users", recordId: id, ip: req.ip });
+    });
+    res.json({ ok: true, deleted: true });
+  } catch {
+    await pool.query("UPDATE users SET is_active = false WHERE id = $1", [id]);
+    res.json({ ok: true, deactivated: true });
+  }
+});
+
+router.delete("/:id", async (req, res) => {
+  const { id } = idParam.parse(req.params);
+  if (id === req.user!.id) {
+    throw new HttpError(400, "You cannot delete your own account");
+  }
+
+  try {
+    await tx(async (c) => {
+      await c.query("DELETE FROM user_permissions WHERE user_id = $1", [id]);
+      await c.query("DELETE FROM users WHERE id = $1", [id]);
+      await audit(c, { userId: req.user!.id, action: "delete_user", table: "users", recordId: id, ip: req.ip });
+    });
+    res.json({ ok: true, deleted: true });
+  } catch {
+    await pool.query("UPDATE users SET is_active = false WHERE id = $1", [id]);
+    res.json({ ok: true, deactivated: true });
+  }
 });
 
 router.post("/:id/reset-password", async (req, res) => {
