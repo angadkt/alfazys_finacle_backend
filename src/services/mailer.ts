@@ -19,7 +19,8 @@ export function getTransporter() {
   const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp.gmail.com";
   const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
   const user = process.env.SMTP_USER || process.env.EMAIL_USER;
-  const pass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
+  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
+  const pass = rawPass ? rawPass.replace(/\s+/g, "") : undefined;
 
   if (user && pass) {
     const isGmail = host.toLowerCase().includes("gmail");
