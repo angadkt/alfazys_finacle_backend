@@ -17,7 +17,6 @@ export interface MailResult {
 
 export function getTransporter() {
   const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp.gmail.com";
-  const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
   const user = process.env.SMTP_USER || process.env.EMAIL_USER;
   const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
   const pass = rawPass ? rawPass.replace(/\s+/g, "") : undefined;
@@ -26,15 +25,24 @@ export function getTransporter() {
     const isGmail = host.toLowerCase().includes("gmail");
     if (isGmail) {
       return nodemailer.createTransport({
-        service: "gmail",
-        auth: { user, pass }
+        host: "smtp.gmail.com",
+        port: 465,
+        secure: true,
+        auth: { user, pass },
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000
       });
     }
+    const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
     return nodemailer.createTransport({
       host,
       port,
       secure: process.env.SMTP_SECURE === "true" || port === 465,
       auth: { user, pass },
+      connectionTimeout: 8000,
+      greetingTimeout: 8000,
+      socketTimeout: 10000,
       tls: { rejectUnauthorized: false }
     });
   }
@@ -257,13 +265,17 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
       }
     }
 
-    const info = await transporter.sendMail({
+    const sendPromise = transporter.sendMail({
       from,
       to: opts.to,
       subject: "Infazys Finacle - Staff Portal Credentials & Access Key",
       text,
       html
     });
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error("SMTP socket timeout after 10s")), 10000);
+    });
+    const info: any = await Promise.race([sendPromise, timeoutPromise]);
 
     const isRealSmtp = Boolean(user && (process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD));
     const previewUrl = nodemailer.getTestMessageUrl(info) || undefined;

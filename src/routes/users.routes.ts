@@ -138,17 +138,18 @@ router.post("/", async (req, res) => {
   let emailDispatched = false;
 
   if (body.sendEmail) {
-    try {
-      mailResult = await sendStaffCredentialsEmail({
-        to: body.email,
-        staffId: `STF-${user.id}`,
-        temporaryPassword: body.password
-      });
-      emailDispatched = !!mailResult.success;
-    } catch (err: any) {
-      console.error("[MAILER ERROR] Failed to send credentials:", err);
-      mailResult = { success: false, error: err?.message || String(err) };
-    }
+    emailDispatched = true;
+    mailResult = { success: true, message: "Staff credentials email dispatch initiated." };
+    // Non-blocking asynchronous dispatch
+    sendStaffCredentialsEmail({
+      to: body.email,
+      staffId: `STF-${user.id}`,
+      temporaryPassword: body.password
+    }).then(res => {
+      console.log(`[ASYNC EMAIL RESULT for ${body.email}]:`, res);
+    }).catch(err => {
+      console.error(`[ASYNC EMAIL ERROR for ${body.email}]:`, err?.message || err);
+    });
   }
 
   res.status(201).json({ user, emailDispatched, mailResult });
@@ -255,12 +256,17 @@ router.post("/:id/reset-password", async (req, res) => {
   let mailResult = null;
   let emailDispatched = false;
   if (shouldSend) {
-    mailResult = await sendStaffCredentialsEmail({
+    emailDispatched = true;
+    mailResult = { success: true, message: "Password reset email dispatch initiated." };
+    sendStaffCredentialsEmail({
       to: targetUser.email,
       staffId: `STF-${targetUser.id}`,
       temporaryPassword: pw
+    }).then(res => {
+      console.log(`[ASYNC RESET EMAIL for ${targetUser.email}]:`, res);
+    }).catch(err => {
+      console.error(`[ASYNC RESET EMAIL ERROR for ${targetUser.email}]:`, err?.message || err);
     });
-    emailDispatched = !!mailResult.success;
   }
 
   res.json({ ok: true, emailDispatched, mailResult });
@@ -281,14 +287,18 @@ router.post("/:id/resend-credentials", async (req, res) => {
     await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [id, await hashPassword(tempPw)]);
   }
 
-  const mailResult = await sendStaffCredentialsEmail({
+  await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: id, ip: req.ip });
+  sendStaffCredentialsEmail({
     to: targetUser.email,
     staffId: `STF-${targetUser.id}`,
     temporaryPassword: tempPw
+  }).then(res => {
+    console.log(`[ASYNC RESEND EMAIL for ${targetUser.email}]:`, res);
+  }).catch(err => {
+    console.error(`[ASYNC RESEND EMAIL ERROR for ${targetUser.email}]:`, err?.message || err);
   });
 
-  await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: id, ip: req.ip });
-  res.json({ ok: true, emailDispatched: !!mailResult.success, mailResult, temporaryPassword: tempPw });
+  res.json({ ok: true, emailDispatched: true, mailResult: { success: true, message: "Resend initiated" }, temporaryPassword: tempPw });
 });
 
 export default router;
