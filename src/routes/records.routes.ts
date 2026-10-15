@@ -565,6 +565,111 @@ router.post("/orders", async (req, res) => {
     return res.status(200).json({ record: recentOrderDuplicate.rows[0], duplicatePrevented: true });
   }
 
+  // Check if an active order already exists for this same agent on this same date
+  if (body.party_id) {
+    const existingOrderRes = await pool.query(
+      `SELECT * FROM orders 
+       WHERE party_id = $1 
+         AND order_date = $2::date 
+         AND status != 'rejected'
+       ORDER BY id ASC 
+       LIMIT 1`,
+      [body.party_id, body.order_date]
+    );
+
+    if (existingOrderRes.rows.length > 0) {
+      const existingOrder = existingOrderRes.rows[0];
+
+      let existingAccounts: any[] = [];
+      if (typeof existingOrder.receivers_data === 'string') {
+        try { existingAccounts = JSON.parse(existingOrder.receivers_data); } catch { existingAccounts = []; }
+      } else if (Array.isArray(existingOrder.receivers_data)) {
+        existingAccounts = existingOrder.receivers_data;
+      }
+
+      // Merge newly added accounts into the existing order accounts list
+      const mergedAccounts = [...existingAccounts, ...(body.accounts || [])];
+
+      let combined_inr = 0;
+      let combined_aed = 0;
+      mergedAccounts.forEach((acc: any) => {
+        const parsedInr = parseFloat(acc.orderAmount);
+        const inrAmt = isNaN(parsedInr) ? 0 : parsedInr;
+        const parsedSaleRate = parseFloat(acc.confirmOrderAmount);
+        const saleRate = isNaN(parsedSaleRate) ? 0 : parsedSaleRate;
+
+        combined_inr += inrAmt;
+        if (saleRate > 0) {
+          combined_aed += inrAmt / saleRate;
+        }
+      });
+
+      // Daily cost rate check
+      const dailyRateRes = await pool.query(
+        `SELECT cost_rate FROM daily_rates WHERE rate_date = $1 LIMIT 1`,
+        [body.order_date]
+      );
+      const cost_rate = dailyRateRes.rows[0] ? parseFloat(dailyRateRes.rows[0].cost_rate) : (existingOrder.cost_rate ? parseFloat(existingOrder.cost_rate) : null);
+      const expected_profit_inr = (cost_rate && combined_aed > 0)
+        ? Math.round(((cost_rate * combined_aed) - combined_inr) * 100) / 100
+        : null;
+
+      // Status determination across all merged receivers
+      const anyPending = mergedAccounts.some((a: any) => !a.payment_status || a.payment_status.toLowerCase() === 'pending');
+      const anyPaid = mergedAccounts.some((a: any) => a.payment_status && a.payment_status.toLowerCase() === 'paid');
+      const anyPartial = mergedAccounts.some((a: any) => a.payment_status && a.payment_status.toLowerCase() === 'partial');
+      let overallPaymentStatus = 'Pending';
+      if (!anyPending && !anyPartial && anyPaid) {
+        overallPaymentStatus = 'Paid';
+      } else if (anyPaid || anyPartial) {
+        overallPaymentStatus = 'Partial';
+      }
+
+      const { updatedRows } = await tx(async (c) => {
+        await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
+        const { rows } = await c.query(
+          `UPDATE orders SET
+             receivers_data = $1,
+             aed_amount = $2,
+             inr_value = $3,
+             cost_rate = COALESCE($4, cost_rate),
+             expected_profit_inr = $5,
+             payment_status = $6,
+             transaction_through = COALESCE($7, transaction_through)
+           WHERE id = $8
+           RETURNING *`,
+          [
+            JSON.stringify(mergedAccounts),
+            combined_aed,
+            combined_inr,
+            cost_rate,
+            expected_profit_inr,
+            overallPaymentStatus,
+            body.transaction_through || null,
+            existingOrder.id
+          ]
+        );
+        return { updatedRows: rows };
+      });
+
+      await audit(pool, {
+        userId: req.user!.id,
+        action: "update",
+        table: "orders",
+        recordId: existingOrder.id,
+        oldData: existingOrder,
+        newData: updatedRows[0],
+        ip: req.ip
+      });
+
+      return res.status(200).json({
+        record: updatedRows[0],
+        merged: true,
+        message: `Accounts appended to existing order ${existingOrder.order_no || `OR-${existingOrder.id}`}`
+      });
+    }
+  }
+
   // Check if daily cost rate exists for this order date
   const dailyRateRes = await pool.query(
     `SELECT cost_rate FROM daily_rates WHERE rate_date = $1 LIMIT 1`,
