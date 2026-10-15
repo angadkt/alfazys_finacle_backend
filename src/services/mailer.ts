@@ -12,20 +12,27 @@ export interface MailResult {
   messageId?: string;
   previewUrl?: string;
   error?: string;
+  smtpConfigured: boolean;
 }
 
-function getTransporter() {
-  const host = process.env.SMTP_HOST || "smtp.gmail.com";
-  const port = Number(process.env.SMTP_PORT) || 587;
-  const secure = process.env.SMTP_SECURE === "true" || port === 465;
+export function getTransporter() {
+  const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp.gmail.com";
+  const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
   const user = process.env.SMTP_USER || process.env.EMAIL_USER;
   const pass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD;
 
   if (user && pass) {
+    const isGmail = host.toLowerCase().includes("gmail");
+    if (isGmail) {
+      return nodemailer.createTransport({
+        service: "gmail",
+        auth: { user, pass }
+      });
+    }
     return nodemailer.createTransport({
       host,
       port,
-      secure,
+      secure: process.env.SMTP_SECURE === "true" || port === 465,
       auth: { user, pass },
       tls: { rejectUnauthorized: false }
     });
@@ -42,7 +49,7 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
   const html = `
     <div style="font-family: Arial, Helvetica, sans-serif; max-width: 620px; border: 2px solid #104080; background: #ffffff; padding: 24px; color: #333; margin: 0 auto;">
       <div style="background: #104080; color: #ffffff; padding: 14px 18px; font-size: 17px; font-weight: bold; letter-spacing: 0.5px; border-radius: 2px;">
-        INFAZYS FINACLE — Staff Terminal Provisioning
+        INFAZYS FINACLE &mdash; Staff Terminal Provisioning
       </div>
       <div style="padding: 20px 8px;">
         <p style="font-size: 14px; margin-bottom: 14px; color: #222;">Dear Staff Member,</p>
@@ -70,22 +77,22 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
           </table>
         </div>
         <div style="background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 12px 16px; font-size: 12px; font-weight: bold; margin-top: 14px; border-radius: 2px; line-height: 1.5;">
-          ⚠ MANDATORY FIRST-LOGIN NOTICE: Upon your initial sign-in, the system will prompt you to replace this temporary password with your permanent password. Access to banking features will remain locked until this is completed.
+          &#9888; MANDATORY FIRST-LOGIN NOTICE: Upon your initial sign-in, the system will prompt you to replace this temporary password with your permanent password. Access to banking features will remain locked until this is completed.
         </div>
       </div>
       <div style="border-top: 1px solid #e2e8f0; margin-top: 20px; padding-top: 12px; font-size: 11px; color: #777; text-align: center;">
-        Infazys Finacle Banking Core • Confidential Automated Notification • Do Not Reply
+        Infazys Finacle Banking Core &bull; Confidential Automated Notification &bull; Do Not Reply
       </div>
     </div>
   `;
 
-  const text = `INFAZYS FINACLE — Staff Terminal Provisioning\n\nDear Staff Member,\nYour access account for the Infazys Finacle Universal Payment Solution has been provisioned.\n\nStaff ID: ${opts.staffId}\nLogin User ID / Email: ${opts.to}\nTemporary Password: ${opts.temporaryPassword}\nPortal URL: ${portalUrl}\n\nNotice: You must change your temporary password upon first login.\n`;
+  const text = `INFAZYS FINACLE -- Staff Terminal Provisioning\n\nDear Staff Member,\nYour access account for the Infazys Finacle Universal Payment Solution has been provisioned.\n\nStaff ID: ${opts.staffId}\nLogin User ID / Email: ${opts.to}\nTemporary Password: ${opts.temporaryPassword}\nPortal URL: ${portalUrl}\n\nNotice: You must change your temporary password upon first login.\n`;
 
   try {
     let transporter = getTransporter();
 
     if (!transporter) {
-      console.warn("⚠️ SMTP credentials (SMTP_USER, SMTP_PASS) not set in .env. Creating test mailer...");
+      console.warn("[MAILER NOTICE] SMTP credentials (SMTP_USER, SMTP_PASS) not configured in server environment. Attempting ethereal test account fallback...");
       try {
         const testAccount = await nodemailer.createTestAccount();
         transporter = nodemailer.createTransport({
@@ -98,35 +105,42 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
           }
         });
       } catch (testErr: any) {
-        console.error("Failed to create test email account:", (testErr as any)?.message);
-        return { success: false, error: "SMTP credentials not configured" };
+        console.error("[MAILER ERROR] Could not create fallback ethereal account:", testErr?.message);
+        return { 
+          success: false, 
+          smtpConfigured: false, 
+          error: "SMTP credentials (SMTP_USER / SMTP_PASS) not configured in server environment. Please configure them in Render settings." 
+        };
       }
     }
 
     const info = await transporter.sendMail({
       from,
       to: opts.to,
-      subject: "Infazys Finacle — Staff Portal Credentials & Access Key",
+      subject: "Infazys Finacle - Staff Portal Credentials & Access Key",
       text,
       html
     });
 
+    const isRealSmtp = Boolean(user && (process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD));
     const previewUrl = nodemailer.getTestMessageUrl(info) || undefined;
-    console.log(`✅ Email dispatched to ${opts.to}. MessageId: ${info.messageId}`);
+    console.log(`[MAILER SUCCESS] Email sent to ${opts.to} (MessageId: ${info.messageId}, RealSMTP: ${isRealSmtp})`);
     if (previewUrl) {
-      console.log(`📧 Preview URL: ${previewUrl}`);
+      console.log(`[MAILER PREVIEW] Ethereal preview link: ${previewUrl}`);
     }
 
     return {
       success: true,
+      smtpConfigured: isRealSmtp,
       messageId: info.messageId,
       previewUrl
     };
   } catch (err: any) {
     const msg = (err as any)?.message || String(err);
-    console.error(`❌ Failed to dispatch email to ${opts.to}:`, msg);
+    console.error(`[MAILER ERROR] Failed to dispatch email to ${opts.to}:`, msg);
     return {
       success: false,
+      smtpConfigured: Boolean(user),
       error: msg
     };
   }

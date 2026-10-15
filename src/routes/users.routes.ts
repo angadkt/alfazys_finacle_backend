@@ -14,7 +14,7 @@ router.use(requireAuth, requireAdmin);
 const idParam = z.object({ id: z.string().regex(/^\d+$/) });
 const level = z.enum(["none", "view", "edit"]);
 const permissionsSchema = z.object({ financial: level, flat: level, investment: level }).partial().strict();
-const password = z.string().min(10, "Password must be at least 10 characters").max(200);
+const password = z.string().min(6, "Password must be at least 6 characters").max(200);
 
 const USER_FIELDS = "id, full_name, email, role, is_active, created_at";
 
@@ -34,8 +34,21 @@ router.get("/staff", async (_req, res) => {
             COALESCE(jsonb_object_agg(p.module, p.level) FILTER (WHERE p.module IS NOT NULL), '{}') AS permissions
      FROM users u LEFT JOIN user_permissions p ON p.user_id = u.id
      WHERE u.role = 'staff'
-     GROUP BY u.id ORDER BY u.id`);
+     GROUP BY u.id ORDER BY u.id`
+  );
   res.json({ staff: rows });
+});
+
+router.get("/mailer/status", async (_req, res) => {
+  const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp.gmail.com";
+  const user = process.env.SMTP_USER || process.env.EMAIL_USER;
+  const hasPass = Boolean(process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD);
+  res.json({
+    smtpConfigured: Boolean(user && hasPass),
+    host,
+    user: user ? `${user.substring(0, 3)}***@${user.split('@')[1] || 'domain'}` : null,
+    hasPassword: hasPass
+  });
 });
 
 router.get("/", async (_req, res) => {
@@ -43,7 +56,8 @@ router.get("/", async (_req, res) => {
     `SELECT u.id, u.full_name, u.email, u.role, u.is_active, u.created_at,
             COALESCE(jsonb_object_agg(p.module, p.level) FILTER (WHERE p.module IS NOT NULL), '{}') AS permissions
      FROM users u LEFT JOIN user_permissions p ON p.user_id = u.id
-     GROUP BY u.id ORDER BY u.id`);
+     GROUP BY u.id ORDER BY u.id`
+  );
   res.json({ users: rows });
 });
 
@@ -51,47 +65,8 @@ router.get("/", async (_req, res) => {
  * @openapi
  * /users:
  *   post:
- *     summary: Create a new Staff user
+ *     summary: Create a new Staff user and send password via email
  *     tags: [Users]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required:
- *               - fullName
- *               - email
- *               - password
- *             properties:
- *               fullName:
- *                 type: string
- *               email:
- *                 type: string
- *                 format: email
- *               password:
- *                 type: string
- *               role:
- *                 type: string
- *                 enum: [staff]
- *                 default: staff
- *               permissions:
- *                 type: object
- *                 properties:
- *                   financial:
- *                     type: string
- *                     enum: [none, view, edit]
- *                   flat:
- *                     type: string
- *                     enum: [none, view, edit]
- *                   investment:
- *                     type: string
- *                     enum: [none, view, edit]
- *     responses:
- *       201:
- *         description: User created successfully
- *       403:
- *         description: Forbidden (Only admins can create users)
  */
 router.post("/", async (req, res) => {
   const body = z.object({
@@ -100,21 +75,49 @@ router.post("/", async (req, res) => {
     password,
     role: z.literal("staff").default("staff"),
     permissions: permissionsSchema.optional(),
+    sendEmail: z.boolean().optional().default(true),
   }).parse(req.body);
 
   const user = await tx(async (c) => {
     const { rows } = await c.query(
       `INSERT INTO users (full_name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING ${USER_FIELDS}`,
-      [body.fullName, body.email, await hashPassword(body.password), body.role]);
+      [body.fullName, body.email, await hashPassword(body.password), body.role]
+    );
     for (const m of MODULES) {
-      await c.query("INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, $3)",
-        [rows[0].id, m, body.permissions?.[m] ?? "none"]);
+      await c.query(
+        "INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, $3)",
+        [rows[0].id, m, body.permissions?.[m] ?? "none"]
+      );
     }
-    await audit(c, { userId: req.user!.id, action: "create_user", table: "users", recordId: rows[0].id,
-      newData: { email: body.email, role: body.role, permissions: body.permissions ?? {} }, ip: req.ip });
+    await audit(c, {
+      userId: req.user!.id,
+      action: "create_user",
+      table: "users",
+      recordId: rows[0].id,
+      newData: { email: body.email, role: body.role, permissions: body.permissions ?? {} },
+      ip: req.ip
+    });
     return rows[0];
   });
-  res.status(201).json({ user });
+
+  let mailResult = null;
+  let emailDispatched = false;
+
+  if (body.sendEmail) {
+    try {
+      mailResult = await sendStaffCredentialsEmail({
+        to: body.email,
+        staffId: `STF-${user.id}`,
+        temporaryPassword: body.password
+      });
+      emailDispatched = !!mailResult.success;
+    } catch (err: any) {
+      console.error("[MAILER ERROR] Failed to send credentials:", err);
+      mailResult = { success: false, error: err?.message || String(err) };
+    }
+  }
+
+  res.status(201).json({ user, emailDispatched, mailResult });
 });
 
 router.patch("/:id", async (req, res) => {
@@ -132,7 +135,8 @@ router.patch("/:id", async (req, res) => {
     `UPDATE users SET full_name = COALESCE($2, full_name), is_active = COALESCE($3, is_active),
             role = COALESCE($4::user_role, role)
      WHERE id = $1 RETURNING ${USER_FIELDS}`,
-    [id, body.fullName ?? null, body.isActive ?? null, body.role ?? null]);
+    [id, body.fullName ?? null, body.isActive ?? null, body.role ?? null]
+  );
   if (!rows[0]) throw new HttpError(404, "User not found");
   await audit(pool, { userId: req.user!.id, action: "update_user", table: "users", recordId: id, newData: body, ip: req.ip });
   res.json({ user: rows[0] });
@@ -147,7 +151,9 @@ router.put("/:id/permissions", async (req, res) => {
     for (const [module, lvl] of Object.entries(perms)) {
       await c.query(
         `INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, $3)
-         ON CONFLICT (user_id, module) DO UPDATE SET level = EXCLUDED.level`, [id, module, lvl]);
+         ON CONFLICT (user_id, module) DO UPDATE SET level = EXCLUDED.level`,
+        [id, module, lvl]
+      );
     }
     await audit(c, { userId: req.user!.id, action: "set_permissions", table: "users", recordId: id, newData: perms, ip: req.ip });
   });
@@ -156,11 +162,56 @@ router.put("/:id/permissions", async (req, res) => {
 
 router.post("/:id/reset-password", async (req, res) => {
   const { id } = idParam.parse(req.params);
-  const { password: pw } = z.object({ password }).parse(req.body);
-  const r = await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [id, await hashPassword(pw)]);
+  const { password: pw, sendEmail: shouldSend } = z.object({ 
+    password,
+    sendEmail: z.boolean().optional().default(true)
+  }).parse(req.body);
+
+  const r = await pool.query(
+    "UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING id, email, full_name",
+    [id, await hashPassword(pw)]
+  );
   if (!r.rowCount) throw new HttpError(404, "User not found");
+  const targetUser = r.rows[0];
   await audit(pool, { userId: req.user!.id, action: "reset_password", table: "users", recordId: id, ip: req.ip });
-  res.json({ ok: true });
+
+  let mailResult = null;
+  let emailDispatched = false;
+  if (shouldSend) {
+    mailResult = await sendStaffCredentialsEmail({
+      to: targetUser.email,
+      staffId: `STF-${targetUser.id}`,
+      temporaryPassword: pw
+    });
+    emailDispatched = !!mailResult.success;
+  }
+
+  res.json({ ok: true, emailDispatched, mailResult });
+});
+
+router.post("/:id/resend-credentials", async (req, res) => {
+  const { id } = idParam.parse(req.params);
+  const { password: pw } = z.object({
+    password: z.string().min(1).max(200).optional()
+  }).parse(req.body || {});
+
+  const r = await pool.query("SELECT id, email, full_name FROM users WHERE id = $1", [id]);
+  if (!r.rowCount) throw new HttpError(404, "User not found");
+  const targetUser = r.rows[0];
+
+  const tempPw = pw || `Fin@${Math.floor(100000 + Math.random() * 900000)}!`;
+  if (!pw) {
+    await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [id, await hashPassword(tempPw)]);
+  }
+
+  const mailResult = await sendStaffCredentialsEmail({
+    to: targetUser.email,
+    staffId: `STF-${targetUser.id}`,
+    temporaryPassword: tempPw
+  });
+
+  await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: id, ip: req.ip });
+  res.json({ ok: true, emailDispatched: !!mailResult.success, mailResult, temporaryPassword: tempPw });
 });
 
 export default router;
