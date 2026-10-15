@@ -50,6 +50,75 @@ export function getTransporter() {
   return null;
 }
 
+
+async function sendViaHttpApi(opts: SendStaffEmailOptions, html: string, text: string): Promise<MailResult | null> {
+  const resendApiKey = process.env.RESEND_API_KEY;
+  const brevoApiKey = process.env.BREVO_API_KEY;
+
+  if (resendApiKey) {
+    try {
+      const from = process.env.SMTP_FROM || process.env.EMAIL_FROM || "Infazys Finacle <onboarding@resend.dev>";
+      const resp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${resendApiKey.trim()}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          from,
+          to: [opts.to],
+          subject: "Infazys Finacle - Staff Portal Credentials & Access Key",
+          html,
+          text
+        })
+      });
+      const data: any = await resp.json();
+      if (resp.ok) {
+        console.log(`[RESEND HTTP SUCCESS] Email delivered to ${opts.to}. ID: ${data.id}`);
+        return { success: true, messageId: data.id, smtpConfigured: true };
+      } else {
+        console.error("[RESEND HTTP ERROR]", data);
+        return { success: false, smtpConfigured: true, error: data.message || "Resend API error" };
+      }
+    } catch (err: any) {
+      console.error("[RESEND NETWORK ERROR]", err.message);
+      return { success: false, smtpConfigured: true, error: err.message };
+    }
+  }
+
+  if (brevoApiKey) {
+    try {
+      const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
+        method: "POST",
+        headers: {
+          "api-key": brevoApiKey.trim(),
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          sender: { name: "Infazys Finacle", email: process.env.SMTP_USER || "admin@infazys.com" },
+          to: [{ email: opts.to }],
+          subject: "Infazys Finacle - Staff Portal Credentials & Access Key",
+          htmlContent: html,
+          textContent: text
+        })
+      });
+      const data: any = await resp.json();
+      if (resp.ok) {
+        console.log(`[BREVO HTTP SUCCESS] Email delivered to ${opts.to}. ID: ${data.messageId}`);
+        return { success: true, messageId: data.messageId, smtpConfigured: true };
+      } else {
+        console.error("[BREVO HTTP ERROR]", data);
+        return { success: false, smtpConfigured: true, error: data.message || "Brevo API error" };
+      }
+    } catch (err: any) {
+      console.error("[BREVO NETWORK ERROR]", err.message);
+      return { success: false, smtpConfigured: true, error: err.message };
+    }
+  }
+
+  return null;
+}
+
 export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Promise<MailResult> {
   const portalUrl = opts.portalUrl || process.env.PORTAL_URL || "https://alfazys-finacle.vercel.app";
   const user = process.env.SMTP_USER || process.env.EMAIL_USER;
@@ -240,6 +309,9 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
   const text = `INFAZYS FINACLE -- Staff Terminal Provisioning\n\nDear Staff Member,\nYour access account for the Infazys Finacle Universal Payment Solution has been provisioned.\n\nStaff ID: ${opts.staffId}\nLogin User ID / Email: ${opts.to}\nTemporary Password: ${opts.temporaryPassword}\nPortal URL: ${portalUrl}\n\nNotice: You must change your temporary password upon first login.\n`;
 
   try {
+    const httpResult = await sendViaHttpApi(opts, html, text);
+    if (httpResult) return httpResult;
+
     let transporter = getTransporter();
 
     if (!transporter) {
@@ -291,7 +363,10 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
       previewUrl
     };
   } catch (err: any) {
-    const msg = (err as any)?.message || String(err);
+    let msg = (err as any)?.message || String(err);
+    if (msg.includes("timeout") || msg.includes("ETIMEDOUT")) {
+      msg = "Render Free Tier blocks raw SMTP ports 465/587. Please add RESEND_API_KEY to Render Environment for instant HTTP delivery.";
+    }
     console.error(`[MAILER ERROR] Failed to dispatch email to ${opts.to}:`, msg);
     return {
       success: false,

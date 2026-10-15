@@ -272,22 +272,56 @@ router.post("/:id/reset-password", async (req, res) => {
   res.json({ ok: true, emailDispatched, mailResult });
 });
 
-router.post("/:id/resend-credentials", async (req, res) => {
-  const { id } = idParam.parse(req.params);
-  const { password: pw } = z.object({
-    password: z.string().min(1).max(200).optional()
-  }).parse(req.body || {});
-
-  const r = await pool.query("SELECT id, email, full_name FROM users WHERE id = $1", [id]);
-  if (!r.rowCount) throw new HttpError(404, "User not found");
+router.post("/by-email/:email/resend-credentials", async (req, res) => {
+  const email = req.params.email.toLowerCase().trim();
+  const r = await pool.query("SELECT id, email, full_name FROM users WHERE LOWER(email) = $1", [email]);
+  if (!r.rowCount) throw new HttpError(404, "Staff user not found in database for email: " + email);
   const targetUser = r.rows[0];
 
+  const pw = req.body?.password;
   const tempPw = pw || `Fin@${Math.floor(100000 + Math.random() * 900000)}!`;
   if (!pw) {
-    await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [id, await hashPassword(tempPw)]);
+    await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [targetUser.id, await hashPassword(tempPw)]);
   }
 
-  await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: id, ip: req.ip });
+  await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: targetUser.id, ip: req.ip });
+  sendStaffCredentialsEmail({
+    to: targetUser.email,
+    staffId: `STF-${targetUser.id}`,
+    temporaryPassword: tempPw
+  }).then(res => {
+    console.log(`[ASYNC RESEND EMAIL for ${targetUser.email}]:`, res);
+  }).catch(err => {
+    console.error(`[ASYNC RESEND EMAIL ERROR for ${targetUser.email}]:`, err?.message || err);
+  });
+
+  res.json({ ok: true, emailDispatched: true, mailResult: { success: true, message: "Resend initiated" }, temporaryPassword: tempPw });
+});
+
+router.post("/:id/resend-credentials", async (req, res) => {
+  const reqEmail = req.body?.email?.toLowerCase()?.trim();
+  let targetUser: any = null;
+
+  const parsed = idParam.safeParse(req.params);
+  if (parsed.success) {
+    const r = await pool.query("SELECT id, email, full_name FROM users WHERE id = $1", [parsed.data.id]);
+    if (r.rowCount) targetUser = r.rows[0];
+  }
+
+  if (!targetUser && reqEmail) {
+    const r = await pool.query("SELECT id, email, full_name FROM users WHERE LOWER(email) = $1", [reqEmail]);
+    if (r.rowCount) targetUser = r.rows[0];
+  }
+
+  if (!targetUser) throw new HttpError(404, "User not found in database");
+
+  const pw = req.body?.password;
+  const tempPw = pw || `Fin@${Math.floor(100000 + Math.random() * 900000)}!`;
+  if (!pw) {
+    await pool.query("UPDATE users SET password_hash = $2 WHERE id = $1", [targetUser.id, await hashPassword(tempPw)]);
+  }
+
+  await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: targetUser.id, ip: req.ip });
   sendStaffCredentialsEmail({
     to: targetUser.email,
     staffId: `STF-${targetUser.id}`,
