@@ -143,7 +143,10 @@ router.post("/", async (req, res) => {
     // Non-blocking asynchronous dispatch
     sendStaffCredentialsEmail({
       to: body.email,
-      staffId: `STF-${user.id}`,
+      staffId: (req.body?.staffCode || `STF-${user.id}`),
+      fullName: (req.body?.fullName || body.fullName),
+      staffCode: req.body?.staffCode,
+      loginUsername: (req.body?.username || body.email.split('@')[0]),
       temporaryPassword: body.password
     }).then(res => {
       console.log(`[ASYNC EMAIL RESULT for ${body.email}]:`, res);
@@ -259,8 +262,11 @@ router.post("/:id/reset-password", async (req, res) => {
     emailDispatched = true;
     mailResult = { success: true, message: "Password reset email dispatch initiated." };
     sendStaffCredentialsEmail({
-      to: targetUser.email,
-      staffId: `STF-${targetUser.id}`,
+    to: targetUser.email,
+    staffId: (req.body?.staffCode || `STF-${targetUser.id}`),
+    fullName: (req.body?.fullName || targetUser.full_name),
+    staffCode: req.body?.staffCode,
+    loginUsername: (req.body?.username || targetUser.email.split('@')[0]),
       temporaryPassword: pw
     }).then(res => {
       console.log(`[ASYNC RESET EMAIL for ${targetUser.email}]:`, res);
@@ -287,7 +293,10 @@ router.post("/by-email/:email/resend-credentials", async (req, res) => {
   await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: targetUser.id, ip: req.ip });
   sendStaffCredentialsEmail({
     to: targetUser.email,
-    staffId: `STF-${targetUser.id}`,
+    staffId: (req.body?.staffCode || `STF-${targetUser.id}`),
+    fullName: (req.body?.fullName || targetUser.full_name),
+    staffCode: req.body?.staffCode,
+    loginUsername: (req.body?.username || targetUser.email.split('@')[0]),
     temporaryPassword: tempPw
   }).then(res => {
     console.log(`[ASYNC RESEND EMAIL for ${targetUser.email}]:`, res);
@@ -324,7 +333,10 @@ router.post("/:id/resend-credentials", async (req, res) => {
   await audit(pool, { userId: req.user!.id, action: "resend_credentials", table: "users", recordId: targetUser.id, ip: req.ip });
   sendStaffCredentialsEmail({
     to: targetUser.email,
-    staffId: `STF-${targetUser.id}`,
+    staffId: (req.body?.staffCode || `STF-${targetUser.id}`),
+    fullName: (req.body?.fullName || targetUser.full_name),
+    staffCode: req.body?.staffCode,
+    loginUsername: (req.body?.username || targetUser.email.split('@')[0]),
     temporaryPassword: tempPw
   }).then(res => {
     console.log(`[ASYNC RESEND EMAIL for ${targetUser.email}]:`, res);
