@@ -110,6 +110,8 @@ async function initDatabase() {
         ALTER TABLE received_aed ADD COLUMN IF NOT EXISTS entry_date DATE NOT NULL DEFAULT CURRENT_DATE;
         ALTER TABLE received_aed ALTER COLUMN collection_staff DROP NOT NULL;
         ALTER TABLE received_aed ADD COLUMN IF NOT EXISTS agent_customer TEXT;
+        ALTER TABLE received_aed ADD COLUMN IF NOT EXISTS utr_no TEXT;
+        ALTER TABLE received_aed ADD COLUMN IF NOT EXISTS description TEXT;
 
         -- Relax daily rates sale_rate constraint
         ALTER TABLE daily_rates ALTER COLUMN sale_rate DROP NOT NULL;

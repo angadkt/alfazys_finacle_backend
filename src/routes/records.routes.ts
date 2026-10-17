@@ -915,6 +915,8 @@ router.put("/received-aed/:id", async (req, res) => {
     remaining_amount: z.number().optional().nullable(),
     entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     agent_customer: z.string().optional().nullable(),
+    utr_no: z.string().optional().nullable(),
+    description: z.string().optional().nullable(),
   }).parse(req.body);
 
   const entryDate = body.entry_date || new Date().toISOString().slice(0, 10);
@@ -932,8 +934,10 @@ router.put("/received-aed/:id", async (req, res) => {
          cash_staff = $4,
          remaining_amount = $5,
          entry_date = $6,
-         agent_customer = $7
-     WHERE id = $8
+         agent_customer = $7,
+         utr_no = $8,
+         description = $9
+     WHERE id = $10
      RETURNING *`,
     [
       body.aed_amount,
@@ -943,6 +947,8 @@ router.put("/received-aed/:id", async (req, res) => {
       body.remaining_amount ?? null,
       entryDate,
       body.agent_customer ? body.agent_customer.trim() : null,
+      body.utr_no ? body.utr_no.trim() : null,
+      body.description ? body.description.trim() : null,
       id
     ]
   );
@@ -1160,6 +1166,85 @@ router.delete("/orders/:id", async (req, res) => {
  *       201:
  *         description: Entry created
  */
+// Helper route: Agent Balance Calculation for Received AED
+router.get("/received-aed/agent-balance", async (req, res) => {
+  try {
+    const agent = (req.query.agent as string) || (req.query.agent_customer as string) || "";
+    const date = (req.query.date as string) || "";
+    const excludeId = req.query.exclude_id ? parseInt(req.query.exclude_id as string) : null;
+
+    if (!agent) {
+      return res.json({ booked_aed: 0, already_received_aed: 0, pending_aed: 0 });
+    }
+
+    const cleanName = agent.replace(/\s*\([^)]*\)\s*$/, "").trim();
+    const cifMatch = agent.match(/\(([^)]+)\)/);
+    const cif = cifMatch ? cifMatch[1].trim() : "";
+
+    // 1. Calculate Booked AED from orders
+    const orderParams: any[] = [];
+    const orderConds: string[] = [];
+
+    if (date) {
+      orderParams.push(date);
+      orderConds.push("o.order_date = $" + orderParams.length);
+    }
+
+    if (cif) {
+      orderParams.push(cif);
+      const p1 = orderParams.length;
+      orderParams.push("%" + cleanName + "%");
+      const p2 = orderParams.length;
+      orderConds.push("(p.cif_no = $" + p1 + " OR TRIM(p.first_name || \x27 \x27 || COALESCE(p.last_name, \x27\x27)) ILIKE $" + p2 + " OR o.party_id::text = $" + p1 + ")");
+    } else {
+      orderParams.push("%" + cleanName + "%");
+      const p1 = orderParams.length;
+      orderConds.push("(TRIM(p.first_name || \x27 \x27 || COALESCE(p.last_name, \x27\x27)) ILIKE $" + p1 + " OR o.party_id::text ILIKE $" + p1 + ")");
+    }
+
+    const orderWhere = orderConds.length ? "WHERE " + orderConds.join(" AND ") : "WHERE 1=0";
+    const orderRes = await pool.query(
+      "SELECT COALESCE(SUM(o.aed_amount), 0)::numeric as booked_aed FROM orders o LEFT JOIN parties p ON o.party_id = p.id " + orderWhere,
+      orderParams
+    );
+    const bookedAed = parseFloat(orderRes.rows[0]?.booked_aed) || 0;
+
+    // 2. Calculate Already Received AED from received_aed
+    const recParams: any[] = [];
+    const recConds: string[] = [];
+
+    if (date) {
+      recParams.push(date);
+      recConds.push("ra.entry_date = $" + recParams.length);
+    }
+
+    recParams.push("%" + cleanName + "%");
+    recConds.push("ra.agent_customer ILIKE $" + recParams.length);
+
+    if (excludeId) {
+      recParams.push(excludeId);
+      recConds.push("ra.id != $" + recParams.length);
+    }
+
+    const recWhere = recConds.length ? "WHERE " + recConds.join(" AND ") : "WHERE 1=0";
+    const recRes = await pool.query(
+      "SELECT COALESCE(SUM(ra.aed_amount), 0)::numeric as received_aed FROM received_aed ra " + recWhere,
+      recParams
+    );
+    const alreadyReceivedAed = parseFloat(recRes.rows[0]?.received_aed) || 0;
+    const pendingAed = Math.max(0, Math.round((bookedAed - alreadyReceivedAed) * 100) / 100);
+
+    res.json({
+      agent,
+      date,
+      booked_aed: bookedAed,
+      already_received_aed: alreadyReceivedAed,
+      pending_aed: pendingAed,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to calculate agent balance", message: err.message });
+  }
+});
 router.post("/received-aed", async (req, res) => {
   const body = z.object({
     aed_amount: z.number().positive(),
@@ -1169,13 +1254,15 @@ router.post("/received-aed", async (req, res) => {
     remaining_amount: z.number().optional(),
     entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
     agent_customer: z.string().optional().nullable(),
+    utr_no: z.string().optional().nullable(),
+    description: z.string().optional().nullable(),
   }).parse(req.body);
 
   const entryDate = body.entry_date || new Date().toISOString().slice(0, 10);
 
   const { rows } = await pool.query(
-    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, entry_date, created_by, agent_customer)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO received_aed (aed_amount, collection_staff, mode_of_txn, cash_staff, remaining_amount, entry_date, created_by, agent_customer, utr_no, description)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       body.aed_amount,
@@ -1185,7 +1272,9 @@ router.post("/received-aed", async (req, res) => {
       body.remaining_amount ?? null,
       entryDate,
       req.user!.id,
-      body.agent_customer ? body.agent_customer.trim() : null
+      body.agent_customer ? body.agent_customer.trim() : null,
+      body.utr_no ? body.utr_no.trim() : null,
+      body.description ? body.description.trim() : null
     ]
   );
 
