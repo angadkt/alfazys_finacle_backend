@@ -848,6 +848,8 @@ router.get("/orders", async (req, res) => {
   const limit = Math.max(1, Math.min(100, parseInt(req.query.limit as string) || 20));
   const search = req.query.search as string || "";
   const date = req.query.date as string || "";
+  const fromDate = (req.query.from_date as string) || (req.query.fromDate as string) || "";
+  const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
   const partyId = req.query.party_id as string || "";
   const offset = (page - 1) * limit;
 
@@ -867,7 +869,19 @@ router.get("/orders", async (req, res) => {
     )`;
   }
 
-  if (date) {
+  if (fromDate && toDate) {
+    params.push(fromDate);
+    const fromIdx = params.length;
+    params.push(toDate);
+    const toIdx = params.length;
+    whereClause += ` AND o.order_date >= $${fromIdx} AND o.order_date <= $${toIdx}`;
+  } else if (fromDate) {
+    params.push(fromDate);
+    whereClause += ` AND o.order_date >= $${params.length}`;
+  } else if (toDate) {
+    params.push(toDate);
+    whereClause += ` AND o.order_date <= $${params.length}`;
+  } else if (date) {
     params.push(date);
     whereClause += ` AND o.order_date = $${params.length}`;
   }
@@ -1300,6 +1314,353 @@ router.post("/received-aed", async (req, res) => {
  *       200:
  *         description: Paginated list
  */
+// =============== Pending AED Collection Report ===============
+router.get("/reports/pending-aed", async (req, res) => {
+  try {
+    const fromDate = (req.query.from_date as string) || (req.query.fromDate as string) || "";
+    const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
+    const date = (req.query.date as string) || "";
+    const agentFilter = (req.query.agent as string) || "";
+    const partyFilter = (req.query.party_id as string) || "";
+    const statusFilter = (req.query.status as string) || "all";
+
+    // 1. Fetch Orders aggregated by party
+    const orderParams: any[] = [];
+    const orderConds: string[] = [];
+
+    if (fromDate && toDate) {
+      orderParams.push(fromDate, toDate);
+      orderConds.push("o.order_date >= $" + (orderParams.length - 1) + " AND o.order_date <= $" + orderParams.length);
+    } else if (fromDate) {
+      orderParams.push(fromDate);
+      orderConds.push("o.order_date >= $" + orderParams.length);
+    } else if (toDate) {
+      orderParams.push(toDate);
+      orderConds.push("o.order_date <= $" + orderParams.length);
+    } else if (date) {
+      orderParams.push(date);
+      orderConds.push("o.order_date = $" + orderParams.length);
+    }
+
+    if (partyFilter) {
+      orderParams.push(partyFilter);
+      orderConds.push("o.party_id = $" + orderParams.length);
+    }
+
+    const orderWhere = orderConds.length ? "WHERE " + orderConds.join(" AND ") : "";
+    const ordersRes = await pool.query(
+      "SELECT o.party_id, " +
+      "TRIM(COALESCE(p.first_name, \x27\x27) || \x27 \x27 || COALESCE(p.last_name, \x27\x27)) AS party_name, " +
+      "p.cif_no, p.contact_number AS mobile_no, " +
+      "COUNT(o.id)::int AS order_count, " +
+      "COALESCE(SUM(o.aed_amount), 0)::numeric AS booked_aed, " +
+      "COALESCE(SUM(o.inr_value), 0)::numeric AS booked_inr, " +
+      "MIN(o.order_date)::text AS earliest_order_date, " +
+      "MAX(o.order_date)::text AS latest_order_date " +
+      "FROM orders o " +
+      "LEFT JOIN parties p ON o.party_id = p.id " +
+      orderWhere + " " +
+      "GROUP BY o.party_id, p.first_name, p.last_name, p.cif_no, p.contact_number",
+      orderParams
+    );
+
+    // 2. Fetch Received AED entries
+    const recParams: any[] = [];
+    const recConds: string[] = [];
+
+    if (fromDate && toDate) {
+      recParams.push(fromDate, toDate);
+      recConds.push("ra.entry_date >= $" + (recParams.length - 1) + " AND ra.entry_date <= $" + recParams.length);
+    } else if (fromDate) {
+      recParams.push(fromDate);
+      recConds.push("ra.entry_date >= $" + recParams.length);
+    } else if (toDate) {
+      recParams.push(toDate);
+      recConds.push("ra.entry_date <= $" + recParams.length);
+    } else if (date) {
+      recParams.push(date);
+      recConds.push("ra.entry_date = $" + recParams.length);
+    }
+
+    const recWhere = recConds.length ? "WHERE " + recConds.join(" AND ") : "";
+    const recRes = await pool.query(
+      "SELECT ra.id, ra.agent_customer, ra.aed_amount, ra.entry_date, ra.mode_of_txn, ra.utr_no, ra.cash_staff, ra.description " +
+      "FROM received_aed ra " +
+      recWhere,
+      recParams
+    );
+
+    // 3. Complete list of parties for matching
+    const allPartiesRes = await pool.query("SELECT id, cif_no, first_name, last_name, contact_number AS mobile_no FROM parties;");
+    const partiesMap = new Map<string, any>();
+    for (const p of allPartiesRes.rows) {
+      partiesMap.set(String(p.id), p);
+      if (p.cif_no) partiesMap.set(p.cif_no.trim().toLowerCase(), p);
+    }
+
+    // Map received amounts to party_id or cleaned name
+    const partyReceivedMap = new Map<string, { total: number; entries: any[] }>();
+
+    for (const r of recRes.rows) {
+      const rawAgent = (r.agent_customer || "").trim();
+      const aed = parseFloat(r.aed_amount) || 0;
+
+      let matchedPartyId: string | null = null;
+      if (rawAgent) {
+        const cifMatch = rawAgent.match(/\(([^)]+)\)/);
+        const cif = cifMatch ? cifMatch[1].trim().toLowerCase() : "";
+        if (cif && partiesMap.has(cif)) {
+          matchedPartyId = String(partiesMap.get(cif).id);
+        } else {
+          const cleanName = rawAgent.replace(/\s*\([^)]*\)\s*$/, "").trim().toLowerCase();
+          for (const p of allPartiesRes.rows) {
+            const fullName = (p.first_name || "" + " " + (p.last_name || "")).trim().toLowerCase();
+            if (fullName === cleanName || (p.cif_no && p.cif_no.toLowerCase() === cleanName) || String(p.id) === cleanName) {
+              matchedPartyId = String(p.id);
+              break;
+            }
+          }
+        }
+      }
+
+      const key = matchedPartyId || ("unmapped_" + (rawAgent || "unknown"));
+      if (!partyReceivedMap.has(key)) {
+        partyReceivedMap.set(key, { total: 0, entries: [] });
+      }
+      const item = partyReceivedMap.get(key)!;
+      item.total += aed;
+      item.entries.push(r);
+    }
+
+    // 4. Combine into rows
+    const reportRows: any[] = [];
+    const processedPartyIds = new Set<string>();
+
+    for (const o of ordersRes.rows) {
+      const pid = String(o.party_id);
+      processedPartyIds.add(pid);
+
+      const bookedAed = Math.round((parseFloat(o.booked_aed) || 0) * 100) / 100;
+      const bookedInr = Math.round((parseFloat(o.booked_inr) || 0) * 100) / 100;
+      const recData = partyReceivedMap.get(pid) || { total: 0, entries: [] };
+      const receivedAed = Math.round(recData.total * 100) / 100;
+      const pendingAed = Math.max(0, Math.round((bookedAed - receivedAed) * 100) / 100);
+      const collectionRate = bookedAed > 0 ? Math.min(100, Math.round((receivedAed / bookedAed) * 1000) / 10) : (receivedAed > 0 ? 100 : 0);
+
+      let status = "uncollected";
+      if (pendingAed <= 0 && receivedAed >= bookedAed && bookedAed > 0) {
+        status = "settled";
+      } else if (receivedAed > 0 && pendingAed > 0) {
+        status = "partial";
+      } else if (bookedAed === 0 && receivedAed > 0) {
+        status = "settled";
+      }
+
+      reportRows.push({
+        party_id: o.party_id,
+        party_name: o.party_name || "Unknown Agent",
+        cif_no: o.cif_no || "",
+        mobile_no: o.mobile_no || "",
+        order_count: o.order_count || 0,
+        booked_aed: bookedAed,
+        booked_inr: bookedInr,
+        received_aed: receivedAed,
+        pending_aed: pendingAed,
+        collection_rate_pct: collectionRate,
+        status,
+        earliest_order_date: o.earliest_order_date,
+        latest_order_date: o.latest_order_date,
+        received_entries_count: recData.entries.length,
+      });
+    }
+
+    // Also include payments without orders in the period
+    for (const [key, recData] of partyReceivedMap.entries()) {
+      if (key.startsWith("unmapped_")) {
+        const rawName = key.replace("unmapped_", "");
+        reportRows.push({
+          party_id: null,
+          party_name: rawName || "Direct / Unmapped",
+          cif_no: "",
+          mobile_no: "",
+          order_count: 0,
+          booked_aed: 0,
+          booked_inr: 0,
+          received_aed: Math.round(recData.total * 100) / 100,
+          pending_aed: 0,
+          collection_rate_pct: 100,
+          status: "settled",
+          earliest_order_date: null,
+          latest_order_date: null,
+          received_entries_count: recData.entries.length,
+        });
+      } else if (!processedPartyIds.has(key)) {
+        const p = partiesMap.get(key);
+        reportRows.push({
+          party_id: key,
+          party_name: p ? (p.first_name || "" + " " + (p.last_name || "")).trim() : ("Party " + key),
+          cif_no: p?.cif_no || "",
+          mobile_no: p?.mobile_no || "",
+          order_count: 0,
+          booked_aed: 0,
+          booked_inr: 0,
+          received_aed: Math.round(recData.total * 100) / 100,
+          pending_aed: 0,
+          collection_rate_pct: 100,
+          status: "settled",
+          earliest_order_date: null,
+          latest_order_date: null,
+          received_entries_count: recData.entries.length,
+        });
+      }
+    }
+
+    // Filter by agent if provided
+    let filtered = reportRows;
+    if (agentFilter) {
+      const q = agentFilter.toLowerCase();
+      filtered = filtered.filter(r => 
+        (r.party_name && r.party_name.toLowerCase().includes(q)) || 
+        (r.cif_no && r.cif_no.toLowerCase().includes(q)) || 
+        String(r.party_id).includes(q)
+      );
+    }
+
+    // Filter by status
+    if (statusFilter === "pending_only") {
+      filtered = filtered.filter(r => r.pending_aed > 0);
+    } else if (statusFilter === "partial") {
+      filtered = filtered.filter(r => r.status === "partial");
+    } else if (statusFilter === "uncollected") {
+      filtered = filtered.filter(r => r.status === "uncollected");
+    } else if (statusFilter === "settled") {
+      filtered = filtered.filter(r => r.status === "settled");
+    }
+
+    filtered.sort((a, b) => b.pending_aed - a.pending_aed || b.booked_aed - a.booked_aed);
+
+    const totalBookedAed = Math.round(reportRows.reduce((s, r) => s + r.booked_aed, 0) * 100) / 100;
+    const totalReceivedAed = Math.round(reportRows.reduce((s, r) => s + r.received_aed, 0) * 100) / 100;
+    const totalPendingAed = Math.max(0, Math.round(reportRows.reduce((s, r) => s + r.pending_aed, 0) * 100) / 100);
+    const overallCollectionRate = totalBookedAed > 0 ? Math.min(100, Math.round((totalReceivedAed / totalBookedAed) * 1000) / 10) : 0;
+    const pendingAgentsCount = reportRows.filter(r => r.pending_aed > 0).length;
+
+    res.json({
+      summary: {
+        total_booked_aed: totalBookedAed,
+        total_received_aed: totalReceivedAed,
+        total_pending_aed: totalPendingAed,
+        collection_rate_pct: overallCollectionRate,
+        total_agents_count: reportRows.length,
+        pending_agents_count: pendingAgentsCount,
+      },
+      filters: {
+        from_date: fromDate,
+        to_date: toDate,
+        date: date,
+        agent: agentFilter,
+        status: statusFilter,
+      },
+      records: filtered,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to generate pending AED report", message: err.message });
+  }
+});
+
+// Drill-down details for a specific party in Pending AED report
+router.get("/reports/pending-aed/details", async (req, res) => {
+  try {
+    const partyId = req.query.party_id as string || "";
+    const fromDate = (req.query.from_date as string) || "";
+    const toDate = (req.query.to_date as string) || "";
+    const date = (req.query.date as string) || "";
+
+    if (!partyId) {
+      return res.status(400).json({ error: "party_id is required" });
+    }
+
+    // Party info
+    const partyRes = await pool.query("SELECT * FROM parties WHERE id = $1", [partyId]);
+    const party = partyRes.rows[0];
+    if (!party) {
+      return res.status(404).json({ error: "Party not found" });
+    }
+
+    // Orders
+    const orderParams: any[] = [partyId];
+    const orderConds: string[] = ["o.party_id = $1"];
+    if (fromDate && toDate) {
+      orderParams.push(fromDate, toDate);
+      orderConds.push("o.order_date >= $" + (orderParams.length - 1) + " AND o.order_date <= $" + orderParams.length);
+    } else if (fromDate) {
+      orderParams.push(fromDate);
+      orderConds.push("o.order_date >= $" + orderParams.length);
+    } else if (toDate) {
+      orderParams.push(toDate);
+      orderConds.push("o.order_date <= $" + orderParams.length);
+    } else if (date) {
+      orderParams.push(date);
+      orderConds.push("o.order_date = $" + orderParams.length);
+    }
+
+    const ordersQuery = 
+      "SELECT o.*, u.full_name as created_by_name " +
+      "FROM orders o " +
+      "LEFT JOIN users u ON o.created_by = u.id " +
+      "WHERE " + orderConds.join(" AND ") + " " +
+      "ORDER BY o.order_date DESC, o.created_at DESC";
+    const ordersList = (await pool.query(ordersQuery, orderParams)).rows;
+
+    // Received AED
+    const cleanName = (party.first_name || "" + " " + (party.last_name || "")).trim();
+    const recParams: any[] = ["%" + (party.cif_no || cleanName) + "%", "%" + cleanName + "%"];
+    const recConds: string[] = ["(ra.agent_customer ILIKE $1 OR ra.agent_customer ILIKE $2)"];
+
+    if (fromDate && toDate) {
+      recParams.push(fromDate, toDate);
+      recConds.push("ra.entry_date >= $" + (recParams.length - 1) + " AND ra.entry_date <= $" + recParams.length);
+    } else if (fromDate) {
+      recParams.push(fromDate);
+      recConds.push("ra.entry_date >= $" + recParams.length);
+    } else if (toDate) {
+      recParams.push(toDate);
+      recConds.push("ra.entry_date <= $" + recParams.length);
+    } else if (date) {
+      recParams.push(date);
+      recConds.push("ra.entry_date = $" + recParams.length);
+    }
+
+    const recQuery = 
+      "SELECT ra.*, u.full_name as created_by_name " +
+      "FROM received_aed ra " +
+      "LEFT JOIN users u ON ra.created_by = u.id " +
+      "WHERE " + recConds.join(" AND ") + " " +
+      "ORDER BY ra.entry_date DESC, ra.created_at DESC";
+    const recList = (await pool.query(recQuery, recParams)).rows;
+
+    const bookedAed = ordersList.reduce((s: number, o: any) => s + (parseFloat(o.aed_amount) || 0), 0);
+    const receivedAed = recList.reduce((s: number, r: any) => s + (parseFloat(r.aed_amount) || 0), 0);
+    const pendingAed = Math.max(0, Math.round((bookedAed - receivedAed) * 100) / 100);
+
+    res.json({
+      party: {
+        id: party.id,
+        cif_no: party.cif_no,
+        name: cleanName,
+        mobile_no: party.contact_number || party.mobile_no || "",
+      },
+      booked_aed: Math.round(bookedAed * 100) / 100,
+      received_aed: Math.round(receivedAed * 100) / 100,
+      pending_aed: pendingAed,
+      orders: ordersList,
+      received_entries: recList,
+    });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to load details", message: err.message });
+  }
+});
+
 router.get("/received-aed", async (req, res) => {
   const page = Math.max(1, parseInt(req.query.page as string) || 1);
   const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
