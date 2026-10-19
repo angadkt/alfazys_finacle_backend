@@ -1518,12 +1518,24 @@ router.get("/reports/pending-aed", async (req, res) => {
     // Filter by agent if provided
     let filtered = reportRows;
     if (agentFilter) {
-      const q = agentFilter.toLowerCase();
-      filtered = filtered.filter(r => 
-        (r.party_name && r.party_name.toLowerCase().includes(q)) || 
-        (r.cif_no && r.cif_no.toLowerCase().includes(q)) || 
-        String(r.party_id).includes(q)
-      );
+      const q = agentFilter.trim().toLowerCase();
+      const cifMatch = q.match(/\(([^)]+)\)/);
+      const extractedCif = cifMatch ? cifMatch[1].trim() : "";
+
+      filtered = filtered.filter(r => {
+        const pName = (r.party_name || "").toLowerCase();
+        const pCif = (r.cif_no || "").toLowerCase();
+        const combined = `${pName} (${pCif})`.toLowerCase();
+        const pId = String(r.party_id || "");
+
+        if (extractedCif && pCif === extractedCif) return true;
+        return (
+          pName.includes(q) ||
+          pCif.includes(q) ||
+          combined.includes(q) ||
+          pId === q
+        );
+      });
     }
 
     // Filter by status
