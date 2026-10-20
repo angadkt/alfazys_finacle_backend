@@ -436,34 +436,126 @@ router.post("/servicers/:id/settle-commission", async (req, res) => {
 });
 
 /**
- * GET /payouts/servicers/:id/statement
- * Passbook ledger of movements for a servicer
+ * GET /payouts/statement
+ * Unified or single-servicer passbook ledger with date, servicer, type, and search filters
  */
-router.get("/servicers/:id/statement", async (req, res) => {
+router.get("/statement", async (req, res) => {
   try {
-    const servicerId = req.params.id;
-    const page = Math.max(1, parseInt(req.query.page as string) || 1);
-    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
-    const offset = (page - 1) * limit;
+    const servicerId = (req.query.servicer_id as string) || "";
+    const fromDate = (req.query.from_date as string) || (req.query.fromDate as string) || "";
+    const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
+    const txnType = (req.query.txn_type as string) || "all";
+    const search = (req.query.search as string) || "";
 
-    const countRes = await pool.query(
-      "SELECT COUNT(*)::int FROM servicer_transactions WHERE servicer_id = $1",
-      [servicerId]
-    );
-    const total = countRes.rows[0].count;
+    const params: any[] = [];
+    const conds: string[] = [];
+
+    if (servicerId && servicerId !== "all") {
+      params.push(servicerId);
+      conds.push(`st.servicer_id = $${params.length}`);
+    }
+
+    if (fromDate && toDate) {
+      params.push(fromDate, toDate);
+      conds.push(`st.entry_date >= $${params.length - 1} AND st.entry_date <= $${params.length}`);
+    } else if (fromDate) {
+      params.push(fromDate);
+      conds.push(`st.entry_date >= $${params.length}`);
+    } else if (toDate) {
+      params.push(toDate);
+      conds.push(`st.entry_date <= $${params.length}`);
+    }
+
+    if (txnType && txnType !== "all") {
+      params.push(txnType);
+      conds.push(`st.txn_type = $${params.length}`);
+    }
+
+    if (search.trim()) {
+      params.push(`%${search.trim().toLowerCase()}%`);
+      conds.push(`(
+        LOWER(COALESCE(st.utr_number, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.txn_no, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.beneficiary_name, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.note, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(s.name, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(o.order_no, '')) LIKE $${params.length}
+      )`);
+    }
+
+    const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
 
     const { rows } = await pool.query(
-      `SELECT st.*, u.full_name as created_by_name, o.order_no
+      `SELECT st.*, u.full_name as created_by_name, o.order_no, s.name as servicer_name, s.servicer_code
        FROM servicer_transactions st
        LEFT JOIN users u ON st.created_by = u.id
        LEFT JOIN orders o ON st.order_id = o.id
-       WHERE st.servicer_id = $1
+       LEFT JOIN servicers s ON st.servicer_id = s.id
+       ${where}
        ORDER BY st.entry_date DESC, st.created_at DESC
-       LIMIT $2 OFFSET $3`,
-      [servicerId, limit, offset]
+       LIMIT 300`,
+      params
     );
 
-    res.json({ transactions: rows, total, page, limit });
+    res.json({ transactions: rows, total: rows.length });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to load statement", message: err.message });
+  }
+});
+
+router.get("/servicers/:id/statement", async (req, res) => {
+  try {
+    const servicerId = req.params.id;
+    const fromDate = (req.query.from_date as string) || (req.query.fromDate as string) || "";
+    const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
+    const txnType = (req.query.txn_type as string) || "all";
+    const search = (req.query.search as string) || "";
+
+    const params: any[] = [servicerId];
+    const conds: string[] = ["st.servicer_id = $1"];
+
+    if (fromDate && toDate) {
+      params.push(fromDate, toDate);
+      conds.push(`st.entry_date >= $${params.length - 1} AND st.entry_date <= $${params.length}`);
+    } else if (fromDate) {
+      params.push(fromDate);
+      conds.push(`st.entry_date >= $${params.length}`);
+    } else if (toDate) {
+      params.push(toDate);
+      conds.push(`st.entry_date <= $${params.length}`);
+    }
+
+    if (txnType && txnType !== "all") {
+      params.push(txnType);
+      conds.push(`st.txn_type = $${params.length}`);
+    }
+
+    if (search.trim()) {
+      params.push(`%${search.trim().toLowerCase()}%`);
+      conds.push(`(
+        LOWER(COALESCE(st.utr_number, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.txn_no, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.beneficiary_name, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.note, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(o.order_no, '')) LIKE $${params.length}
+      )`);
+    }
+
+    const where = `WHERE ${conds.join(" AND ")}`;
+
+    const { rows } = await pool.query(
+      `SELECT st.*, u.full_name as created_by_name, o.order_no, s.name as servicer_name, s.servicer_code
+       FROM servicer_transactions st
+       LEFT JOIN users u ON st.created_by = u.id
+       LEFT JOIN orders o ON st.order_id = o.id
+       LEFT JOIN servicers s ON st.servicer_id = s.id
+       ${where}
+       ORDER BY st.entry_date DESC, st.created_at DESC
+       LIMIT 300`,
+      params
+    );
+
+    res.json({ transactions: rows, total: rows.length });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to load statement", message: err.message });
   }
