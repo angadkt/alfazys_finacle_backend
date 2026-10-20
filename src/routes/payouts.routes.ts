@@ -670,6 +670,7 @@ router.post("/dispatch", async (req, res) => {
 
     // 3. Execute atomic transaction
     const result = await tx(async (c) => {
+      await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
       // Fetch order
       const ordRes = await c.query("SELECT * FROM orders WHERE id = $1 FOR UPDATE", [body.order_id]);
       if (ordRes.rows.length === 0) {
@@ -833,6 +834,7 @@ router.post("/transactions/:id/bounce", async (req, res) => {
     const { reason } = req.body;
 
     const result = await tx(async (c) => {
+      await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
       const txnRes = await c.query("SELECT * FROM servicer_transactions WHERE id = $1 FOR UPDATE", [txnId]);
       if (txnRes.rows.length === 0) throw new Error("Transaction not found");
       const txn = txnRes.rows[0];
