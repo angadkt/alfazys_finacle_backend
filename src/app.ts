@@ -12,6 +12,7 @@ import records from "./routes/records.routes";
 import users from "./routes/users.routes";
 import masters from "./routes/masters.routes";
 import cif from "./routes/cif.routes";
+import payouts from "./routes/payouts.routes";
 
 import { pool } from "./db";
 import { requestLogger } from "./logger";
@@ -91,6 +92,7 @@ app.use("/records", records);
 app.use("/masters", masters);
 app.use("/cif", cif);
 app.use("/approvals", approvals);
+app.use("/payouts", payouts);
 
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 app.use(errorHandler);
