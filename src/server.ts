@@ -120,8 +120,11 @@ async function initDatabase() {
 
         -- Servicers and Payouts
         CREATE SEQUENCE IF NOT EXISTS servicer_code_seq START 1001;
+        CREATE SEQUENCE IF NOT EXISTS servicer_acc_seq START 100100001001;
         CREATE TABLE IF NOT EXISTS servicers (
           id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          party_id        BIGINT REFERENCES parties(id),
+          cif_no          TEXT,
           servicer_code   TEXT NOT NULL UNIQUE DEFAULT ('SER-' || nextval('servicer_code_seq')::text),
           name            TEXT NOT NULL,
           phone           TEXT,
@@ -134,6 +137,8 @@ async function initDatabase() {
           created_by      BIGINT REFERENCES users(id),
           created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS party_id BIGINT REFERENCES parties(id);
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS cif_no TEXT;
 
         CREATE SEQUENCE IF NOT EXISTS payout_txn_seq START 1;
         CREATE TABLE IF NOT EXISTS servicer_transactions (
@@ -169,6 +174,7 @@ async function initDatabase() {
           created_by          BIGINT REFERENCES users(id),
           created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE servicer_transactions ADD COLUMN IF NOT EXISTS beneficiary_branch TEXT;
       `);
       console.log('✅ Migrations checked and executed');
     } catch (migErr: any) {

@@ -125,6 +125,8 @@ router.get("/servicers", async (req, res) => {
 
       return {
         id: s.id,
+        party_id: s.party_id || null,
+        cif_no: s.cif_no || "",
         servicer_code: s.servicer_code,
         name: s.name,
         phone: s.phone || "",
@@ -156,36 +158,113 @@ router.get("/servicers", async (req, res) => {
 });
 
 /**
+ * GET /payouts/eligible-cifs
+ * Returns verified parties where CIF Type = SERVICER (cif_type_id = 5)
+ */
+router.get("/eligible-cifs", async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT 
+         p.id,
+         p.cif_no,
+         p.first_name,
+         p.last_name,
+         p.short_name,
+         p.contact_number,
+         p.indian_number,
+         p.status,
+         p.created_at,
+         COALESCE(pa.city, '') as city,
+         COALESCE(pa.country, '') as country,
+         s.id as existing_servicer_id,
+         s.servicer_code as existing_servicer_code
+       FROM parties p
+       LEFT JOIN party_addresses pa ON pa.party_id = p.id AND pa.address_type = 'PERMANENT'
+       LEFT JOIN servicers s ON s.party_id = p.id
+       WHERE p.cif_type_id = 5 AND p.status = 'verified'
+       ORDER BY p.id DESC`
+    );
+
+    res.json({ cifs: rows });
+  } catch (err: any) {
+    res.status(500).json({ error: "Failed to load eligible servicer CIFs", message: err.message });
+  }
+});
+
+/**
  * POST /payouts/servicers
- * Create a new Servicer Account
+ * Create / Open a new Servicer Wallet Account (supports linking to verified CIF)
  */
 router.post("/servicers", async (req, res) => {
   try {
     const schema = z.object({
-      name: z.string().min(2, "Name is required"),
+      party_id: z.union([z.string(), z.number()]).optional(),
+      name: z.string().optional(),
       phone: z.string().optional().default(""),
       city: z.string().optional().default(""),
       bank_name: z.string().optional().default(""),
       account_no: z.string().optional().default(""),
       ifsc_code: z.string().optional().default(""),
-      commission_rate: z.number().min(0).max(10).default(0.25),
+      commission_rate: z.number().min(0).max(10).optional().default(0),
       status: z.enum(["active", "inactive", "suspended"]).default("active"),
     });
 
     const body = schema.parse(req.body);
 
+    let finalName = (body.name || "").trim();
+    let finalPhone = body.phone.trim();
+    let finalCity = body.city.trim();
+    let finalCifNo: string | null = null;
+    let finalPartyId: string | null = null;
+
+    if (body.party_id) {
+      finalPartyId = String(body.party_id);
+      const partyRes = await pool.query(
+        `SELECT p.*, COALESCE(pa.city, '') as city
+         FROM parties p
+         LEFT JOIN party_addresses pa ON pa.party_id = p.id AND pa.address_type = 'PERMANENT'
+         WHERE p.id = $1`,
+        [finalPartyId]
+      );
+      if (partyRes.rows.length > 0) {
+        const p = partyRes.rows[0];
+        finalCifNo = p.cif_no || null;
+        if (!finalName) {
+          finalName = [p.first_name, p.last_name].filter(Boolean).join(" ");
+        }
+        if (!finalPhone) {
+          finalPhone = (p.contact_number || p.indian_number || "").trim();
+        }
+        if (!finalCity) {
+          finalCity = (p.city || "").trim();
+        }
+      }
+    }
+
+    if (!finalName) {
+      return res.status(400).json({ error: "Servicer name is required" });
+    }
+
+    let finalAccountNo = body.account_no.trim();
+    if (!finalAccountNo) {
+      const seqRes = await pool.query("SELECT nextval('servicer_acc_seq')::text as acc");
+      finalAccountNo = seqRes.rows[0].acc;
+    }
+
     const { rows } = await pool.query(
-      `INSERT INTO servicers (name, phone, city, bank_name, account_no, ifsc_code, commission_rate, status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO servicers (party_id, cif_no, name, phone, city, bank_name, account_no, ifsc_code, commission_rate, status, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
-        body.name.trim(),
-        body.phone.trim(),
-        body.city.trim(),
+        finalPartyId,
+        finalCifNo,
+        finalName,
+        finalPhone,
+        finalCity,
         body.bank_name.trim(),
-        body.account_no.trim(),
+        finalAccountNo,
         body.ifsc_code.trim().toUpperCase(),
-        body.commission_rate,
+        body.commission_rate ?? 0,
         body.status,
         req.user!.id,
       ]
@@ -571,174 +650,151 @@ router.get("/servicers/:id/statement", async (req, res) => {
  */
 router.get("/dispatch-queue", async (req, res) => {
   try {
-    const fromDate = (req.query.from_date as string) || "";
-    const toDate = (req.query.to_date as string) || "";
-    const statusFilter = (req.query.status as string) || "all";
+    const fromDate = (req.query.from_date as string) || (req.query.fromDate as string) || "";
+    const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
+    const servicerId = (req.query.servicer_id as string) || (req.query.servicerId as string) || "all";
+    const paymentMode = (req.query.payment_mode as string) || "all";
     const searchQuery = (req.query.search as string) || "";
 
     const params: any[] = [];
-    const conds: string[] = [];
+    const conds: string[] = ["st.txn_type = 'payout_debit'"];
+
+    if (servicerId && servicerId !== "all") {
+      params.push(servicerId);
+      conds.push(`st.servicer_id = $${params.length}`);
+    }
 
     if (fromDate && toDate) {
       params.push(fromDate, toDate);
-      conds.push(`o.order_date >= $${params.length - 1} AND o.order_date <= $${params.length}`);
+      conds.push(`st.entry_date >= $${params.length - 1} AND st.entry_date <= $${params.length}`);
     } else if (fromDate) {
       params.push(fromDate);
-      conds.push(`o.order_date >= $${params.length}`);
+      conds.push(`st.entry_date >= $${params.length}`);
     } else if (toDate) {
       params.push(toDate);
-      conds.push(`o.order_date <= $${params.length}`);
+      conds.push(`st.entry_date <= $${params.length}`);
+    }
+
+    if (paymentMode && paymentMode !== "all") {
+      params.push(paymentMode);
+      conds.push(`st.payment_mode = $${params.length}`);
+    }
+
+    if (searchQuery.trim()) {
+      params.push(`%${searchQuery.trim().toLowerCase()}%`);
+      conds.push(`(
+        LOWER(COALESCE(st.beneficiary_name, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.beneficiary_account, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.beneficiary_ifsc, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.beneficiary_bank, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.beneficiary_branch, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.utr_number, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(st.txn_no, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(s.name, '')) LIKE $${params.length} OR
+        LOWER(COALESCE(s.servicer_code, '')) LIKE $${params.length}
+      )`);
     }
 
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
 
-    const { rows: orders } = await pool.query(
-      `SELECT o.id, o.order_no, o.order_date, o.aed_amount, o.inr_value, o.payment_status as overall_payment_status,
-              o.receivers_data, o.receiver_name, o.receiver_account, o.receiver_ifsc, o.receiver_bank, o.receiver_branch,
-              o.party_id, TRIM(COALESCE(p.first_name, '') || ' ' || COALESCE(p.last_name, '')) AS party_name,
-              p.cif_no
-       FROM orders o
-       LEFT JOIN parties p ON o.party_id = p.id
+    const { rows: debits } = await pool.query(
+      `SELECT st.*, 
+              s.name as servicer_name, s.servicer_code, s.cif_no, s.account_no as servicer_account_no,
+              u.full_name as created_by_name
+       FROM servicer_transactions st
+       LEFT JOIN servicers s ON st.servicer_id = s.id
+       LEFT JOIN users u ON st.created_by = u.id
        ${where}
-       ORDER BY o.order_date DESC, o.id DESC`,
+       ORDER BY st.entry_date DESC, st.created_at DESC
+       LIMIT 300`,
       params
     );
 
-    // Expand receivers from JSONB
-    const queueRows: any[] = [];
+    // Aggregate summary metrics: Float Credited vs Beneficiary Debited
+    const sumCreditedRes = await pool.query(
+      "SELECT COALESCE(SUM(amount), 0)::numeric as total_credited FROM servicer_transactions WHERE txn_type = 'float_credit' AND bounced = false"
+    );
+    const sumDebitedRes = await pool.query(
+      "SELECT COALESCE(SUM(amount), 0)::numeric as total_debited, COUNT(*)::int as debits_count FROM servicer_transactions WHERE txn_type = 'payout_debit' AND bounced = false"
+    );
 
-    for (const ord of orders) {
-      let recs: any[] = [];
-      if (Array.isArray(ord.receivers_data) && ord.receivers_data.length > 0) {
-        recs = ord.receivers_data;
-      } else {
-        recs = [
-          {
-            clientName: ord.receiver_name || "Beneficiary",
-            accountNumber: ord.receiver_account || "",
-            ifscCode: ord.receiver_ifsc || "",
-            bankName: ord.receiver_bank || "",
-            branchName: ord.receiver_branch || "",
-            orderAmount: ord.inr_value || 0,
-            payment_status: ord.overall_payment_status || "Pending",
-          },
-        ];
-      }
-
-      recs.forEach((r, idx) => {
-        const orderAmount = parseFloat(String(r.orderAmount || 0).replace(/,/g, "")) || 0;
-        const paidAmount = parseFloat(String(r.paid_amount || (r.payment_status === "Paid" ? orderAmount : 0))) || 0;
-        const balanceDue = Math.max(0, Math.round((orderAmount - paidAmount) * 100) / 100);
-        const pStatus = (r.payment_status || "Pending").trim();
-
-        queueRows.push({
-          order_id: ord.id,
-          order_no: ord.order_no,
-          order_date: ord.order_date,
-          party_id: ord.party_id,
-          party_name: ord.party_name || "Unknown Agent",
-          cif_no: ord.cif_no || "",
-          receiver_index: idx,
-          beneficiary_name: r.clientName || r.receiver_name || "Beneficiary",
-          account_number: r.accountNumber || r.receiver_account || "",
-          ifsc_code: r.ifscCode || r.receiver_ifsc || "",
-          bank_name: r.bankName || r.receiver_bank || "",
-          branch_name: r.branchName || r.receiver_branch || "",
-          servicer_name: r.servicer || r.servicer_name || "",
-          servicer_id: r.servicer_id || null,
-          order_amount: orderAmount,
-          paid_amount: paidAmount,
-          balance_due: balanceDue,
-          payment_status: pStatus,
-          last_utr: r.utr_number || r.last_utr || "",
-          paid_at: r.paid_at || null,
-          payout_channel: r.payout_channel || "servicer",
-          variance_amount: r.variance_amount || 0,
-          variance_reason: r.variance_reason || "",
-        });
-      });
-    }
-
-    // Filter by search
-    let filtered = queueRows;
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      filtered = filtered.filter((r) =>
-        r.beneficiary_name.toLowerCase().includes(q) ||
-        r.account_number.toLowerCase().includes(q) ||
-        r.ifsc_code.toLowerCase().includes(q) ||
-        r.party_name.toLowerCase().includes(q) ||
-        r.cif_no.toLowerCase().includes(q) ||
-        r.order_no.toLowerCase().includes(q)
-      );
-    }
-
-    // Filter by status
-    if (statusFilter === "pending_only") {
-      filtered = filtered.filter((r) => r.payment_status.toLowerCase() === "pending" || r.payment_status.toLowerCase() === "partial");
-    } else if (statusFilter === "partial") {
-      filtered = filtered.filter((r) => r.payment_status.toLowerCase() === "partial");
-    } else if (statusFilter === "paid") {
-      filtered = filtered.filter((r) => r.payment_status.toLowerCase() === "paid");
-    }
-
-    // Aggregate summary metrics
-    const totalObligation = Math.round(queueRows.reduce((s, r) => s + r.order_amount, 0) * 100) / 100;
-    const totalPaid = Math.round(queueRows.reduce((s, r) => s + r.paid_amount, 0) * 100) / 100;
-    const totalUncleared = Math.max(0, Math.round(queueRows.reduce((s, r) => s + r.balance_due, 0) * 100) / 100);
-    const pendingCount = queueRows.filter((r) => r.payment_status.toLowerCase() === "pending" || r.payment_status.toLowerCase() === "partial").length;
-    const paidCount = queueRows.filter((r) => r.payment_status.toLowerCase() === "paid").length;
+    const totalCredited = parseFloat(sumCreditedRes.rows[0]?.total_credited || "0") || 0;
+    const totalDebited = parseFloat(sumDebitedRes.rows[0]?.total_debited || "0") || 0;
+    const netAvailable = Math.round((totalCredited - totalDebited) * 100) / 100;
+    const debitsCount = parseInt(sumDebitedRes.rows[0]?.debits_count || "0") || 0;
 
     res.json({
       summary: {
-        total_obligation: totalObligation,
-        total_paid: totalPaid,
-        total_uncleared: totalUncleared,
-        pending_count: pendingCount,
-        paid_count: paidCount,
-        total_beneficiaries: queueRows.length,
+        total_credited: totalCredited,
+        total_debited: totalDebited,
+        net_available: netAvailable,
+        total_debits: debitsCount,
       },
-      records: filtered,
+      records: debits.map((d: any) => ({
+        id: d.id,
+        txn_no: d.txn_no,
+        entry_date: d.entry_date,
+        servicer_id: d.servicer_id,
+        servicer_name: d.servicer_name || (d.channel === "direct" ? "Company Direct" : "Unassigned"),
+        servicer_code: d.servicer_code || "",
+        cif_no: d.cif_no || "",
+        servicer_account_no: d.servicer_account_no || "",
+        channel: d.channel,
+        wallet_type: d.wallet_type,
+        beneficiary_name: d.beneficiary_name || "Beneficiary",
+        account_number: d.beneficiary_account || "",
+        ifsc_code: d.beneficiary_ifsc || "",
+        bank_name: d.beneficiary_bank || "",
+        branch_name: d.beneficiary_branch || "",
+        amount: parseFloat(d.amount) || 0,
+        payment_mode: d.payment_mode,
+        utr_number: d.utr_number || "",
+        note: d.note || "",
+        bounced: d.bounced,
+        bounced_reason: d.bounced_reason || "",
+        created_at: d.created_at,
+        created_by_name: d.created_by_name || "Admin",
+      })),
     });
   } catch (err: any) {
-    res.status(500).json({ error: "Failed to generate dispatch queue", message: err.message });
+    res.status(500).json({ error: "Failed to generate debit entries queue", message: err.message });
   }
 });
 
 /**
  * POST /payouts/dispatch
- * Execute Beneficiary Payout (Debit Entry)
- * Supports both Servicer Payout and Direct Company Payout
- * Handles Case 1 (Limit Shortfall) and Case 2 (CDM pocket top-up)
+ * Record Direct Beneficiary Payout (Debit Entry)
+ * Debits servicer float or marks as direct company payout
  */
 router.post("/dispatch", async (req, res) => {
   try {
     const schema = z.object({
-      order_id: z.coerce.number().positive(),
-      receiver_index: z.coerce.number().min(0).default(0),
       channel: z.enum(["servicer", "direct"]).default("servicer"),
       servicer_id: z.coerce.number().nullable().optional(),
       wallet_type: z.enum(["bank", "cash", "direct"]).default("bank"),
-      actual_paid_amount: z.number().positive("Actual paid amount must be greater than 0"),
-      expected_amount: z.number().positive(),
+      beneficiary_name: z.string().min(1, "Beneficiary name is required"),
+      beneficiary_account: z.string().optional().default(""),
+      beneficiary_bank: z.string().optional().default(""),
+      beneficiary_branch: z.string().optional().default(""),
+      beneficiary_ifsc: z.string().optional().default(""),
+      actual_paid_amount: z.number().positive("Payout amount must be greater than 0"),
       payment_mode: z.string().default("bank_transfer"),
       utr_number: z.string().min(1, "UTR / Transaction reference is required"),
       proof_file_key: z.string().optional(),
       note: z.string().optional(),
       entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default(() => new Date().toISOString().slice(0, 10)),
-      variance_reason: z.string().optional(),
     });
 
     const body = schema.parse(req.body);
 
     // 1. Check duplicate UTR
     const dupCheck = await pool.query(
-      "SELECT txn_no, order_id FROM servicer_transactions WHERE utr_number = $1 AND bounced = false LIMIT 1",
+      "SELECT txn_no, utr_number FROM servicer_transactions WHERE utr_number = $1 AND bounced = false LIMIT 1",
       [body.utr_number.trim()]
     );
     if (dupCheck.rows.length > 0) {
       return res.status(400).json({
-        error: `Duplicate UTR Reference: '${body.utr_number}' was already used in transaction ${dupCheck.rows[0].txn_no}`,
+        error: `Duplicate UTR Reference: '${body.utr_number}' was already recorded in transaction ${dupCheck.rows[0].txn_no}`,
       });
     }
 
@@ -749,7 +805,7 @@ router.post("/dispatch", async (req, res) => {
 
     if (body.channel === "servicer") {
       if (!body.servicer_id) {
-        return res.status(400).json({ error: "Servicer must be selected for servicer dispatch" });
+        return res.status(400).json({ error: "Please select a servicer to execute this payout" });
       }
       const sRes = await pool.query("SELECT * FROM servicers WHERE id = $1", [body.servicer_id]);
       if (sRes.rows.length === 0) {
@@ -757,162 +813,61 @@ router.post("/dispatch", async (req, res) => {
       }
       servicer = sRes.rows[0];
       commissionRate = parseFloat(servicer.commission_rate) || 0;
-      commissionAmount = Math.round(body.actual_paid_amount * (commissionRate / 100) * 100) / 100;
+      if (commissionRate > 0) {
+        commissionAmount = Math.round(body.actual_paid_amount * (commissionRate / 100) * 100) / 100;
+      }
     }
 
-    // 3. Execute atomic transaction
-    const result = await tx(async (c) => {
-      await c.query("SELECT set_config('app.allow_verified_change', 'on', true)");
-      // Fetch order
-      const ordRes = await c.query("SELECT * FROM orders WHERE id = $1 FOR UPDATE", [body.order_id]);
-      if (ordRes.rows.length === 0) {
-        throw new Error("Order not found");
-      }
-      const order = ordRes.rows[0];
-
-      let recs: any[] = [];
-      if (Array.isArray(order.receivers_data) && order.receivers_data.length > 0) {
-        recs = order.receivers_data;
-      } else {
-        recs = [
-          {
-            clientName: order.receiver_name,
-            accountNumber: order.receiver_account,
-            ifscCode: order.receiver_ifsc,
-            bankName: order.receiver_bank,
-            branchName: order.receiver_branch,
-            orderAmount: order.inr_value,
-            payment_status: order.payment_status || "Pending",
-          },
-        ];
-      }
-
-      if (body.receiver_index >= recs.length) {
-        throw new Error(`Receiver index ${body.receiver_index} out of bounds`);
-      }
-
-      const rec = recs[body.receiver_index];
-      const previousPaid = parseFloat(String(rec.paid_amount || 0)) || 0;
-      const newCumulativePaid = Math.round((previousPaid + body.actual_paid_amount) * 100) / 100;
-      const targetAmount = parseFloat(String(rec.orderAmount || body.expected_amount)) || body.expected_amount;
-
-      // Status determination
-      const variance = Math.round((body.actual_paid_amount - body.expected_amount) * 100) / 100;
-      let newReceiverStatus = "Paid";
-      if (newCumulativePaid < targetAmount) {
-        newReceiverStatus = "Partial"; // Case 1: Shortfall / Limit
-      } else {
-        newReceiverStatus = "Paid"; // Case 2 or Full Settlement
-      }
-
-      // Record servicer debit transaction
-      const debitRes = await c.query(
-        `INSERT INTO servicer_transactions (
-           servicer_id, channel, txn_type, direction, wallet_type, amount,
-           order_id, receiver_index, beneficiary_name, beneficiary_account, beneficiary_bank, beneficiary_ifsc,
-           expected_amount, variance_amount, variance_reason,
-           commission_rate, commission_amount, commission_settled,
-           payment_mode, utr_number, proof_file_key, note, entry_date, created_by
-         ) VALUES (
-           $1, $2, 'payout_debit', 'out', $3, $4,
-           $5, $6, $7, $8, $9, $10,
-           $11, $12, $13,
-           $14, $15, false,
-           $16, $17, $18, $19, $20, $21
-         ) RETURNING *`,
-        [
-          body.channel === "servicer" ? body.servicer_id : null,
-          body.channel,
-          body.channel === "direct" ? "direct" : body.wallet_type,
-          body.actual_paid_amount,
-          body.order_id,
-          body.receiver_index,
-          rec.clientName || rec.receiver_name || "Beneficiary",
-          rec.accountNumber || rec.receiver_account || "",
-          rec.bankName || rec.receiver_bank || "",
-          rec.ifscCode || rec.receiver_ifsc || "",
-          body.expected_amount,
-          variance,
-          body.variance_reason || (variance > 0 ? "CDM Pocket Top-up" : variance < 0 ? "Account Limit Shortfall" : "Exact Payout"),
-          commissionRate,
-          commissionAmount,
-          body.payment_mode,
-          body.utr_number.trim(),
-          body.proof_file_key || null,
-          body.note || null,
-          body.entry_date,
-          req.user!.id,
-        ]
-      );
-
-      // Case 2: If servicer paid extra from pocket (variance > 0), auto-generate reimbursement credit
-      let reimbRes: any = null;
-      if (body.channel === "servicer" && variance > 0) {
-        reimbRes = await c.query(
-          `INSERT INTO servicer_transactions (
-             servicer_id, channel, txn_type, direction, wallet_type, amount,
-             order_id, receiver_index, note, entry_date, created_by
-           ) VALUES ($1, 'servicer', 'reimbursement', 'in', 'cash', $2, $3, $4, $5, $6, $7)
-           RETURNING *`,
-          [
-            body.servicer_id,
-            variance,
-            body.order_id,
-            body.receiver_index,
-            `Pocket Top-up Reimbursement for Order ${order.order_no} (${body.variance_reason || "CDM note denomination"})`,
-            body.entry_date,
-            req.user!.id,
-          ]
-        );
-      }
-
-      // Update receiver inside receivers_data
-      rec.paid_amount = newCumulativePaid;
-      rec.payment_status = newReceiverStatus;
-      rec.utr_number = body.utr_number.trim();
-      rec.servicer_id = body.servicer_id || null;
-      rec.servicer_name = servicer ? servicer.name : "Direct";
-      rec.payout_channel = body.channel;
-      rec.paid_at = new Date().toISOString();
-      rec.variance_amount = variance;
-      rec.variance_reason = body.variance_reason || "";
-
-      recs[body.receiver_index] = rec;
-
-      // Check overall order payment status
-      const allPaid = recs.every((r) => (r.payment_status || "").toLowerCase() === "paid");
-      const anyPartial = recs.some((r) => (r.payment_status || "").toLowerCase() === "partial" || ((r.paid_amount || 0) > 0 && (r.paid_amount || 0) < (r.orderAmount || 0)));
-      const overallStatus = allPaid ? "Paid" : anyPartial ? "Partial" : "Pending";
-
-      await c.query(
-        "UPDATE orders SET receivers_data = $1, payment_status = $2 WHERE id = $3",
-        [JSON.stringify(recs), overallStatus, body.order_id]
-      );
-
-      return {
-        debit: debitRes.rows[0],
-        reimbursement: reimbRes ? reimbRes.rows[0] : null,
-        new_receiver_status: newReceiverStatus,
-        overall_order_status: overallStatus,
-      };
-    });
+    // 3. Insert into servicer_transactions
+    const { rows } = await pool.query(
+      `INSERT INTO servicer_transactions (
+         servicer_id, channel, txn_type, direction, wallet_type, amount,
+         beneficiary_name, beneficiary_account, beneficiary_bank, beneficiary_branch, beneficiary_ifsc,
+         commission_rate, commission_amount, commission_settled,
+         payment_mode, utr_number, proof_file_key, note, entry_date, created_by
+       ) VALUES (
+         $1, $2, 'payout_debit', 'out', $3, $4,
+         $5, $6, $7, $8, $9,
+         $10, $11, false,
+         $12, $13, $14, $15, $16, $17
+       ) RETURNING *`,
+      [
+        body.channel === "servicer" ? body.servicer_id : null,
+        body.channel,
+        body.channel === "direct" ? "direct" : body.wallet_type,
+        body.actual_paid_amount,
+        body.beneficiary_name.trim(),
+        body.beneficiary_account.trim(),
+        body.beneficiary_bank.trim(),
+        body.beneficiary_branch.trim(),
+        body.beneficiary_ifsc.trim().toUpperCase(),
+        commissionRate,
+        commissionAmount,
+        body.payment_mode,
+        body.utr_number.trim(),
+        body.proof_file_key || null,
+        body.note?.trim() || null,
+        body.entry_date,
+        req.user!.id,
+      ]
+    );
 
     await audit(pool, {
       userId: req.user!.id,
-      action: "payout_dispatch",
+      action: "beneficiary_debit_entry",
       table: "servicer_transactions",
-      recordId: result.debit.id,
-      newData: result.debit,
+      recordId: rows[0].id,
+      newData: rows[0],
       ip: req.ip,
     });
 
     res.status(201).json({
       success: true,
-      result,
-      message: `Payout of ₹ ${body.actual_paid_amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })} recorded successfully. Status: ${result.new_receiver_status}.`,
+      transaction: rows[0],
+      message: `Successfully recorded debit entry of ₹${body.actual_paid_amount.toLocaleString("en-IN")} to ${body.beneficiary_name}`,
     });
   } catch (err: any) {
-    res.status(400).json({ error: "Failed to process payout dispatch", message: err.message });
+    res.status(400).json({ error: "Failed to record debit entry", message: err.message });
   }
 });
 
