@@ -1679,16 +1679,28 @@ router.get("/received-aed", async (req, res) => {
   const offset = (page - 1) * limit;
 
   const dateFilter = (req.query.date as string) || null;
+  const fromDate = (req.query.from_date as string) || (req.query.fromDate as string) || null;
+  const toDate = (req.query.to_date as string) || (req.query.toDate as string) || null;
   const modeFilter = (req.query.mode_of_txn as string) || null;
   const agentFilter = (req.query.agent_customer as string) || (req.query.agent as string) || null;
 
   const conditions: string[] = [];
   const params: any[] = [];
 
-  if (dateFilter) {
+  if (fromDate && toDate) {
+    params.push(fromDate, toDate);
+    conditions.push(`ra.entry_date >= $${params.length - 1} AND ra.entry_date <= $${params.length}`);
+  } else if (fromDate) {
+    params.push(fromDate);
+    conditions.push(`ra.entry_date >= $${params.length}`);
+  } else if (toDate) {
+    params.push(toDate);
+    conditions.push(`ra.entry_date <= $${params.length}`);
+  } else if (dateFilter) {
     params.push(dateFilter);
     conditions.push(`ra.entry_date = $${params.length}`);
   }
+
   if (modeFilter) {
     params.push(modeFilter);
     conditions.push(`ra.mode_of_txn = $${params.length}`);
