@@ -121,6 +121,8 @@ async function initDatabase() {
         -- Servicers and Payouts
         CREATE SEQUENCE IF NOT EXISTS servicer_code_seq START 1001;
         CREATE SEQUENCE IF NOT EXISTS servicer_acc_seq START 100100001001;
+        CREATE SEQUENCE IF NOT EXISTS servicer_acc_india_seq START 10;
+        CREATE SEQUENCE IF NOT EXISTS servicer_acc_uae_seq START 10;
         CREATE TABLE IF NOT EXISTS servicers (
           id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
           party_id        BIGINT REFERENCES parties(id),

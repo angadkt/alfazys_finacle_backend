@@ -291,16 +291,21 @@ router.post("/servicers", async (req, res) => {
       return res.status(400).json({ error: "Servicer name is required" });
     }
 
+    const branch = (body.branch || "INDIA").toUpperCase();
+
     let finalAccountNo = body.account_no.trim();
     if (!finalAccountNo) {
-      const seqRes = await pool.query("SELECT nextval('servicer_acc_seq')::text as acc");
-      finalAccountNo = seqRes.rows[0].acc;
+      if (branch === "UAE") {
+        const seqRes = await pool.query("SELECT nextval('servicer_acc_uae_seq')::text as acc");
+        finalAccountNo = `00971 1010 ${seqRes.rows[0].acc.padStart(5, "0")}`;
+      } else {
+        const seqRes = await pool.query("SELECT nextval('servicer_acc_india_seq')::text as acc");
+        finalAccountNo = `0091 1010 ${seqRes.rows[0].acc.padStart(6, "0")}`;
+      }
     }
-
-    const branch = (body.branch || "INDIA").toUpperCase();
     let finalIfscCode = body.ifsc_code.trim().toUpperCase();
     if (!finalIfscCode) {
-      finalIfscCode = branch === "UAE" ? "INFA0000002" : "INFA0000001";
+      finalIfscCode = branch === "UAE" ? "FNCL0000971" : "FNCL0000091";
     }
 
     let finalBankName = body.bank_name.trim();
@@ -375,7 +380,7 @@ router.patch("/servicers/:id", async (req, res) => {
       values.push(body.branch); 
       updates.push(`branch = $${values.length}`); 
       if (body.ifsc_code === undefined) {
-        const autoIfsc = body.branch === "UAE" ? "INFA0000002" : "INFA0000001";
+        const autoIfsc = body.branch === "UAE" ? "FNCL0000971" : "FNCL0000091";
         values.push(autoIfsc);
         updates.push(`ifsc_code = $${values.length}`);
       }
@@ -545,6 +550,105 @@ router.post("/servicers/:id/convert", async (req, res) => {
     res.json({ success: true, conversion: result });
   } catch (err: any) {
     res.status(400).json({ error: "Failed to perform float conversion", message: err.message });
+  }
+});
+
+/**
+ * POST /payouts/servicers/inter-transfer
+ * Inter-Servicer Working Float Transfer (Directly move float between two servicers)
+ */
+router.post("/servicers/inter-transfer", async (req, res) => {
+  try {
+    const schema = z.object({
+      from_servicer_id: z.union([z.string(), z.number()]),
+      to_servicer_id: z.union([z.string(), z.number()]),
+      from_wallet: z.enum(["bank", "cash"]).default("bank"),
+      to_wallet: z.enum(["bank", "cash"]).default("bank"),
+      amount: z.number().positive("Amount must be greater than 0"),
+      utr_number: z.string().optional(),
+      note: z.string().optional(),
+      entry_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default(() => new Date().toISOString().slice(0, 10)),
+    });
+
+    const body = schema.parse(req.body);
+    const fromId = String(body.from_servicer_id);
+    const toId = String(body.to_servicer_id);
+
+    if (fromId === toId) {
+      return res.status(400).json({ error: "Source and destination servicers must be different" });
+    }
+
+    const { rows: matchedServicers } = await pool.query(
+      "SELECT id, name, servicer_code FROM servicers WHERE id IN ($1, $2)",
+      [fromId, toId]
+    );
+
+    const fromServicer = matchedServicers.find((s: any) => String(s.id) === fromId);
+    const toServicer = matchedServicers.find((s: any) => String(s.id) === toId);
+
+    if (!fromServicer || !toServicer) {
+      return res.status(404).json({ error: "One or both servicers not found" });
+    }
+
+    const result = await tx(async (c) => {
+      const outNote = [
+        `Inter-Servicer Float Transfer TO [${toServicer.servicer_code}] ${toServicer.name}`,
+        body.utr_number ? `UTR: ${body.utr_number.trim()}` : "",
+        body.note ? body.note.trim() : ""
+      ].filter(Boolean).join(" • ");
+
+      const inNote = [
+        `Inter-Servicer Float Transfer FROM [${fromServicer.servicer_code}] ${fromServicer.name}`,
+        body.utr_number ? `UTR: ${body.utr_number.trim()}` : "",
+        body.note ? body.note.trim() : ""
+      ].filter(Boolean).join(" • ");
+
+      // 1. Deduct from source servicer
+      const outRes = await c.query(
+        `INSERT INTO servicer_transactions (
+           servicer_id, channel, txn_type, direction, wallet_type, amount,
+           payment_mode, utr_number, note, entry_date, created_by
+         ) VALUES ($1, 'servicer', 'conversion', 'out', $2, $3, 'inter_servicer_transfer', $4, $5, $6, $7)
+         RETURNING *`,
+        [
+          fromId,
+          body.from_wallet,
+          body.amount,
+          body.utr_number ? body.utr_number.trim() : null,
+          outNote,
+          body.entry_date,
+          req.user!.id,
+        ]
+      );
+
+      // 2. Add to destination servicer
+      const inRes = await c.query(
+        `INSERT INTO servicer_transactions (
+           servicer_id, channel, txn_type, direction, wallet_type, amount,
+           payment_mode, utr_number, note, entry_date, created_by
+         ) VALUES ($1, 'servicer', 'conversion', 'in', $2, $3, 'inter_servicer_transfer', $4, $5, $6, $7)
+         RETURNING *`,
+        [
+          toId,
+          body.to_wallet,
+          body.amount,
+          body.utr_number ? body.utr_number.trim() : null,
+          inNote,
+          body.entry_date,
+          req.user!.id,
+        ]
+      );
+
+      return { out: outRes.rows[0], in: inRes.rows[0] };
+    });
+
+    res.json({
+      success: true,
+      message: `Successfully transferred ₹${body.amount.toLocaleString("en-IN")} from ${fromServicer.name} to ${toServicer.name}`,
+      transfer: result,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: "Failed to execute inter-servicer float transfer", message: err.message });
   }
 });
 
