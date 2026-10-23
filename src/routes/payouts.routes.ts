@@ -18,9 +18,19 @@ router.use(requireAuth);
 router.get("/servicers", async (req, res) => {
   try {
     const servicersRes = await pool.query(
-      `SELECT s.*, u.full_name as created_by_name
+      `SELECT s.*, u.full_name as created_by_name,
+              pd.id as photo_doc_id,
+              pd.mime_type as photo_mime_type,
+              CASE WHEN pd.file_data IS NOT NULL THEN encode(pd.file_data, 'base64') ELSE NULL END as photo_base64
        FROM servicers s
        LEFT JOIN users u ON s.created_by = u.id
+       LEFT JOIN LATERAL (
+         SELECT id, mime_type, file_data
+         FROM party_documents
+         WHERE party_id = s.party_id AND doc_type = 'photo'
+         ORDER BY id DESC
+         LIMIT 1
+       ) pd ON true
        ORDER BY s.created_at DESC`
     );
 
@@ -123,6 +133,13 @@ router.get("/servicers", async (req, res) => {
       const cashBalance = Math.round((b.cash_in - b.cash_out) * 100) / 100;
       const totalFloat = Math.round((bankBalance + cashBalance) * 100) / 100;
 
+      let photoUrl: string | null = null;
+      if (s.photo_base64) {
+        photoUrl = `data:${s.photo_mime_type || "image/jpeg"};base64,${s.photo_base64}`;
+      } else if (s.photo_doc_id && s.party_id) {
+        photoUrl = `/cif/${s.party_id}/documents/${s.photo_doc_id}`;
+      }
+
       return {
         id: s.id,
         party_id: s.party_id || null,
@@ -131,13 +148,17 @@ router.get("/servicers", async (req, res) => {
         name: s.name,
         phone: s.phone || "",
         city: s.city || "",
+        branch: s.branch || "INDIA",
         bank_name: s.bank_name || "",
         account_no: s.account_no || "",
         ifsc_code: s.ifsc_code || "",
+        bank_accounts: s.bank_accounts || [],
         commission_rate: parseFloat(s.commission_rate) || 0,
         status: s.status,
         created_at: s.created_at,
         created_by_name: s.created_by_name || "Admin",
+        photo_doc_id: s.photo_doc_id || null,
+        photo_url: photoUrl,
         wallet: {
           bank_balance: bankBalance,
           cash_balance: cashBalance,
@@ -177,15 +198,38 @@ router.get("/eligible-cifs", async (req, res) => {
          COALESCE(pa.city, '') as city,
          COALESCE(pa.country, '') as country,
          s.id as existing_servicer_id,
-         s.servicer_code as existing_servicer_code
+         s.servicer_code as existing_servicer_code,
+         pd.id as photo_doc_id,
+         pd.mime_type as photo_mime_type,
+         CASE WHEN pd.file_data IS NOT NULL THEN encode(pd.file_data, 'base64') ELSE NULL END as photo_base64
        FROM parties p
        LEFT JOIN party_addresses pa ON pa.party_id = p.id AND pa.address_type = 'PERMANENT'
        LEFT JOIN servicers s ON s.party_id = p.id
-       WHERE p.cif_type_id = 5 AND p.status = 'verified'
+       LEFT JOIN LATERAL (
+         SELECT id, mime_type, file_data
+         FROM party_documents
+         WHERE party_id = p.id AND doc_type = 'photo'
+         ORDER BY id DESC
+         LIMIT 1
+       ) pd ON true
+       WHERE p.cif_type_id = 5 AND p.status = 'verified' AND s.id IS NULL
        ORDER BY p.id DESC`
     );
 
-    res.json({ cifs: rows });
+    const cifsWithPhoto = rows.map((c: any) => {
+      let photoUrl: string | null = null;
+      if (c.photo_base64) {
+        photoUrl = `data:${c.photo_mime_type || "image/jpeg"};base64,${c.photo_base64}`;
+      } else if (c.photo_doc_id) {
+        photoUrl = `/cif/${c.id}/documents/${c.photo_doc_id}`;
+      }
+      return {
+        ...c,
+        photo_url: photoUrl,
+      };
+    });
+
+    res.json({ cifs: cifsWithPhoto });
   } catch (err: any) {
     res.status(500).json({ error: "Failed to load eligible servicer CIFs", message: err.message });
   }
@@ -202,9 +246,11 @@ router.post("/servicers", async (req, res) => {
       name: z.string().optional(),
       phone: z.string().optional().default(""),
       city: z.string().optional().default(""),
+      branch: z.enum(["INDIA", "UAE"]).optional().default("INDIA"),
       bank_name: z.string().optional().default(""),
       account_no: z.string().optional().default(""),
       ifsc_code: z.string().optional().default(""),
+      bank_accounts: z.array(z.any()).optional().default([]),
       commission_rate: z.number().min(0).max(10).optional().default(0),
       status: z.enum(["active", "inactive", "suspended"]).default("active"),
     });
@@ -251,9 +297,20 @@ router.post("/servicers", async (req, res) => {
       finalAccountNo = seqRes.rows[0].acc;
     }
 
+    const branch = (body.branch || "INDIA").toUpperCase();
+    let finalIfscCode = body.ifsc_code.trim().toUpperCase();
+    if (!finalIfscCode) {
+      finalIfscCode = branch === "UAE" ? "INFA0000002" : "INFA0000001";
+    }
+
+    let finalBankName = body.bank_name.trim();
+    if (!finalBankName) {
+      finalBankName = branch === "UAE" ? "Infazys Finacle - UAE Branch" : "Infazys Finacle - India Branch";
+    }
+
     const { rows } = await pool.query(
-      `INSERT INTO servicers (party_id, cif_no, name, phone, city, bank_name, account_no, ifsc_code, commission_rate, status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO servicers (party_id, cif_no, name, phone, city, branch, bank_name, account_no, ifsc_code, bank_accounts, commission_rate, status, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
       [
         finalPartyId,
@@ -261,9 +318,11 @@ router.post("/servicers", async (req, res) => {
         finalName,
         finalPhone,
         finalCity,
-        body.bank_name.trim(),
+        branch,
+        finalBankName,
         finalAccountNo,
-        body.ifsc_code.trim().toUpperCase(),
+        finalIfscCode,
+        JSON.stringify(body.bank_accounts || []),
         body.commission_rate ?? 0,
         body.status,
         req.user!.id,
@@ -296,9 +355,11 @@ router.patch("/servicers/:id", async (req, res) => {
       name: z.string().min(1).optional(),
       phone: z.string().optional(),
       city: z.string().optional(),
+      branch: z.enum(["INDIA", "UAE"]).optional(),
       bank_name: z.string().optional(),
       account_no: z.string().optional(),
       ifsc_code: z.string().optional(),
+      bank_accounts: z.array(z.any()).optional(),
       commission_rate: z.number().min(0).max(10).optional(),
       status: z.enum(["active", "inactive", "suspended"]).optional(),
     });
@@ -310,9 +371,19 @@ router.patch("/servicers/:id", async (req, res) => {
     if (body.name !== undefined) { values.push(body.name.trim()); updates.push(`name = $${values.length}`); }
     if (body.phone !== undefined) { values.push(body.phone.trim()); updates.push(`phone = $${values.length}`); }
     if (body.city !== undefined) { values.push(body.city.trim()); updates.push(`city = $${values.length}`); }
+    if (body.branch !== undefined) { 
+      values.push(body.branch); 
+      updates.push(`branch = $${values.length}`); 
+      if (body.ifsc_code === undefined) {
+        const autoIfsc = body.branch === "UAE" ? "INFA0000002" : "INFA0000001";
+        values.push(autoIfsc);
+        updates.push(`ifsc_code = $${values.length}`);
+      }
+    }
     if (body.bank_name !== undefined) { values.push(body.bank_name.trim()); updates.push(`bank_name = $${values.length}`); }
     if (body.account_no !== undefined) { values.push(body.account_no.trim()); updates.push(`account_no = $${values.length}`); }
     if (body.ifsc_code !== undefined) { values.push(body.ifsc_code.trim().toUpperCase()); updates.push(`ifsc_code = $${values.length}`); }
+    if (body.bank_accounts !== undefined) { values.push(JSON.stringify(body.bank_accounts)); updates.push(`bank_accounts = $${values.length}`); }
     if (body.commission_rate !== undefined) { values.push(body.commission_rate); updates.push(`commission_rate = $${values.length}`); }
     if (body.status !== undefined) { values.push(body.status); updates.push(`status = $${values.length}`); }
 

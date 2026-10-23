@@ -139,6 +139,8 @@ async function initDatabase() {
         );
         ALTER TABLE servicers ADD COLUMN IF NOT EXISTS party_id BIGINT REFERENCES parties(id);
         ALTER TABLE servicers ADD COLUMN IF NOT EXISTS cif_no TEXT;
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS branch TEXT DEFAULT 'INDIA';
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS bank_accounts JSONB DEFAULT '[]';
 
         CREATE SEQUENCE IF NOT EXISTS payout_txn_seq START 1;
         CREATE TABLE IF NOT EXISTS servicer_transactions (
