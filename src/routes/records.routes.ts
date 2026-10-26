@@ -1076,8 +1076,19 @@ router.patch("/orders/:id/receiver/:index", async (req, res) => {
     numericPaid = parseFloat(String(recs[recIndex]?.paid_amount || 0).replace(/,/g, "")) || 0;
   }
 
+  // Automatically determine if fully paid or partial shortfall
+  const bookedOrderAmount = parseFloat(String(recs[recIndex]?.orderAmount || recs[recIndex]?.inr_amount || recs[recIndex]?.amount || 0).replace(/,/g, "")) || 0;
+  let finalStatus = payment_status;
+  if (bookedOrderAmount > 0 && finalStatus.toLowerCase() !== "cancelled") {
+    if (numericPaid >= bookedOrderAmount - 0.01) {
+      finalStatus = "paid";
+    } else if (numericPaid > 0) {
+      finalStatus = "partial";
+    }
+  }
+
   // Update the specific receiver's payment_status and paid_amount
-  recs[recIndex] = { ...recs[recIndex], payment_status, paid_amount: numericPaid };
+  recs[recIndex] = { ...recs[recIndex], payment_status: finalStatus, paid_amount: numericPaid };
 
   // Compute aggregate order-level payment_status
   const statuses = recs.map((r: any) => (r.payment_status || "Pending").toLowerCase());

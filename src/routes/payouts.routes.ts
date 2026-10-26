@@ -252,6 +252,9 @@ router.post("/servicers", async (req, res) => {
       ifsc_code: z.string().optional().default(""),
       bank_accounts: z.array(z.any()).optional().default([]),
       commission_rate: z.number().min(0).max(10).optional().default(0),
+      account_type: z.enum(["SERVICER", "SAVINGS", "CURRENT", "BORROWED"]).optional().default("SERVICER"),
+      sanctioned_limit: z.number().optional().default(0),
+      initial_deposit: z.number().optional().default(0),
       status: z.enum(["active", "inactive", "suspended"]).default("active"),
     });
 
@@ -293,14 +296,22 @@ router.post("/servicers", async (req, res) => {
 
     const branch = (body.branch || "INDIA").toUpperCase();
 
+    const schemeMap: Record<string, string> = {
+      SERVICER: "1010",
+      SAVINGS: "1020",
+      CURRENT: "1030",
+      BORROWED: "1040",
+    };
+    const schemeCode = schemeMap[body.account_type || "SERVICER"] || "1010";
+
     let finalAccountNo = body.account_no.trim();
     if (!finalAccountNo) {
       if (branch === "UAE") {
         const seqRes = await pool.query("SELECT nextval('servicer_acc_uae_seq')::text as acc");
-        finalAccountNo = `00971 1010 ${seqRes.rows[0].acc.padStart(5, "0")}`;
+        finalAccountNo = `00971 ${schemeCode} ${seqRes.rows[0].acc.padStart(5, "0")}`;
       } else {
         const seqRes = await pool.query("SELECT nextval('servicer_acc_india_seq')::text as acc");
-        finalAccountNo = `0091 1010 ${seqRes.rows[0].acc.padStart(6, "0")}`;
+        finalAccountNo = `0091 ${schemeCode} ${seqRes.rows[0].acc.padStart(6, "0")}`;
       }
     }
     let finalIfscCode = body.ifsc_code.trim().toUpperCase();
@@ -314,8 +325,8 @@ router.post("/servicers", async (req, res) => {
     }
 
     const { rows } = await pool.query(
-      `INSERT INTO servicers (party_id, cif_no, name, phone, city, branch, bank_name, account_no, ifsc_code, bank_accounts, commission_rate, status, created_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      `INSERT INTO servicers (party_id, cif_no, name, phone, city, branch, bank_name, account_no, ifsc_code, bank_accounts, commission_rate, status, created_by, account_type, sanctioned_limit, initial_deposit)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING *`,
       [
         finalPartyId,
@@ -331,6 +342,9 @@ router.post("/servicers", async (req, res) => {
         body.commission_rate ?? 0,
         body.status,
         req.user!.id,
+        body.account_type || 'SERVICER',
+        body.sanctioned_limit ?? 0,
+        body.initial_deposit ?? 0,
       ]
     );
 
@@ -700,6 +714,7 @@ router.get("/statement", async (req, res) => {
     const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
     const txnType = (req.query.txn_type as string) || "all";
     const search = (req.query.search as string) || "";
+    const sortOrder = ((req.query.sort_order as string) || (req.query.sortOrder as string) || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
 
     const params: any[] = [];
     const conds: string[] = [];
@@ -746,7 +761,7 @@ router.get("/statement", async (req, res) => {
        LEFT JOIN orders o ON st.order_id = o.id
        LEFT JOIN servicers s ON st.servicer_id = s.id
        ${where}
-       ORDER BY st.entry_date DESC, st.created_at DESC
+       ORDER BY st.entry_date ${sortOrder}, st.created_at ${sortOrder}, st.id ${sortOrder}
        LIMIT 300`,
       params
     );
@@ -764,6 +779,7 @@ router.get("/servicers/:id/statement", async (req, res) => {
     const toDate = (req.query.to_date as string) || (req.query.toDate as string) || "";
     const txnType = (req.query.txn_type as string) || "all";
     const search = (req.query.search as string) || "";
+    const sortOrder = ((req.query.sort_order as string) || (req.query.sortOrder as string) || "asc").toLowerCase() === "desc" ? "DESC" : "ASC";
 
     const params: any[] = [servicerId];
     const conds: string[] = ["st.servicer_id = $1"];
@@ -804,7 +820,7 @@ router.get("/servicers/:id/statement", async (req, res) => {
        LEFT JOIN orders o ON st.order_id = o.id
        LEFT JOIN servicers s ON st.servicer_id = s.id
        ${where}
-       ORDER BY st.entry_date DESC, st.created_at DESC
+       ORDER BY st.entry_date ${sortOrder}, st.created_at ${sortOrder}, st.id ${sortOrder}
        LIMIT 300`,
       params
     );
