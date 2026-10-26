@@ -212,7 +212,7 @@ router.get("/eligible-cifs", async (req, res) => {
          ORDER BY id DESC
          LIMIT 1
        ) pd ON true
-       WHERE p.cif_type_id = 5 AND p.status = 'verified' AND s.id IS NULL
+       WHERE (p.cif_type_id IN (SELECT id FROM cif_types WHERE UPPER(name) = 'SERVICER') OR p.cif_type_id IN (5, 6)) AND p.status = 'verified' AND s.id IS NULL
        ORDER BY p.id DESC`
     );
 
