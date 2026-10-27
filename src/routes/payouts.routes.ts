@@ -252,7 +252,17 @@ router.post("/servicers", async (req, res) => {
       ifsc_code: z.string().optional().default(""),
       bank_accounts: z.array(z.any()).optional().default([]),
       commission_rate: z.number().min(0).max(10).optional().default(0),
-      account_type: z.enum(["SERVICER", "SAVINGS", "CURRENT", "BORROWED"]).optional().default("SERVICER"),
+      account_type: z.enum([
+        "SERVICER",
+        "SAVINGS",
+        "SALARY",
+        "CURRENT",
+        "CORPORATE_SINGLE",
+        "CORPORATE_JOINT",
+        "PROFIT",
+        "EXPENSE",
+        "BORROWED"
+      ]).optional().default("SERVICER"),
       sanctioned_limit: z.number().optional().default(0),
       initial_deposit: z.number().optional().default(0),
       status: z.enum(["active", "inactive", "suspended"]).default("active"),
@@ -299,7 +309,12 @@ router.post("/servicers", async (req, res) => {
     const schemeMap: Record<string, string> = {
       SERVICER: "1010",
       SAVINGS: "1020",
+      SALARY: "1050",
       CURRENT: "1030",
+      CORPORATE_SINGLE: "1060",
+      CORPORATE_JOINT: "1070",
+      PROFIT: "2010",
+      EXPENSE: "2020",
       BORROWED: "1040",
     };
     const schemeCode = schemeMap[body.account_type || "SERVICER"] || "1010";
@@ -357,7 +372,7 @@ router.post("/servicers", async (req, res) => {
       ip: req.ip,
     });
 
-    res.status(201).json({ success: true, servicer: rows[0] });
+    res.status(201).json({ success: true, servicer: rows[0], account_no: rows[0].account_no, ifsc_code: rows[0].ifsc_code });
   } catch (err: any) {
     res.status(400).json({ error: "Failed to create servicer", message: err.message });
   }
