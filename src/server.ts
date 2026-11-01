@@ -143,6 +143,10 @@ async function initDatabase() {
         ALTER TABLE servicers ADD COLUMN IF NOT EXISTS cif_no TEXT;
         ALTER TABLE servicers ADD COLUMN IF NOT EXISTS branch TEXT DEFAULT 'INDIA';
         ALTER TABLE servicers ADD COLUMN IF NOT EXISTS bank_accounts JSONB DEFAULT '[]';
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS account_type TEXT DEFAULT 'SERVICER';
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS sanctioned_limit NUMERIC(15,2) DEFAULT 0;
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS initial_deposit NUMERIC(15,2) DEFAULT 0;
+        ALTER TABLE servicers ADD COLUMN IF NOT EXISTS opening_date DATE;
 
         CREATE SEQUENCE IF NOT EXISTS payout_txn_seq START 1;
         CREATE TABLE IF NOT EXISTS servicer_transactions (
