@@ -322,9 +322,11 @@ router.post("/servicers", async (req, res) => {
     let finalAccountNo = body.account_no.trim();
     if (!finalAccountNo) {
       if (branch === "UAE") {
+        await pool.query("CREATE SEQUENCE IF NOT EXISTS servicer_acc_uae_seq START 10").catch(() => {});
         const seqRes = await pool.query("SELECT nextval('servicer_acc_uae_seq')::text as acc");
         finalAccountNo = `00971 ${schemeCode} ${seqRes.rows[0].acc.padStart(5, "0")}`;
       } else {
+        await pool.query("CREATE SEQUENCE IF NOT EXISTS servicer_acc_india_seq START 10").catch(() => {});
         const seqRes = await pool.query("SELECT nextval('servicer_acc_india_seq')::text as acc");
         finalAccountNo = `0091 ${schemeCode} ${seqRes.rows[0].acc.padStart(6, "0")}`;
       }
@@ -374,7 +376,8 @@ router.post("/servicers", async (req, res) => {
 
     res.status(201).json({ success: true, servicer: rows[0], account_no: rows[0].account_no, ifsc_code: rows[0].ifsc_code });
   } catch (err: any) {
-    res.status(400).json({ error: "Failed to create servicer", message: err.message });
+    console.error("POST /payouts/servicers error:", err);
+    res.status(400).json({ error: "Failed to create servicer", message: err.message, detail: err.detail });
   }
 });
 

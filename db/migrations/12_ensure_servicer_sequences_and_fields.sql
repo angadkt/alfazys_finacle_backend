@@ -1,0 +1,17 @@
+-- Migration 12: Ensure servicer sequences, accounts, and fields
+CREATE SEQUENCE IF NOT EXISTS servicer_code_seq START 1001;
+CREATE SEQUENCE IF NOT EXISTS servicer_acc_seq START 100100001001;
+CREATE SEQUENCE IF NOT EXISTS servicer_acc_india_seq START 10;
+CREATE SEQUENCE IF NOT EXISTS servicer_acc_uae_seq START 10;
+CREATE SEQUENCE IF NOT EXISTS payout_txn_seq START 1;
+
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS party_id BIGINT REFERENCES parties(id);
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS cif_no TEXT;
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS branch TEXT DEFAULT 'INDIA';
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS bank_accounts JSONB DEFAULT '[]';
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS account_type TEXT DEFAULT 'SERVICER';
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS sanctioned_limit NUMERIC(15,2) DEFAULT 0;
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS initial_deposit NUMERIC(15,2) DEFAULT 0;
+ALTER TABLE servicers ADD COLUMN IF NOT EXISTS opening_date DATE;
+
+ALTER TABLE servicer_transactions ADD COLUMN IF NOT EXISTS beneficiary_branch TEXT;
