@@ -256,30 +256,72 @@ async function initDatabase() {
 
     console.log("✅ Database schema & migrations verified successfully");
 
-    // 5. Auto-seed default admin if no admin account exists yet
+    // 5. Ensure super admin account (infazyss@gmail.com / Infaz@1010) is active and up to date
     const usersTable = await pool.query("SELECT to_regclass('public.users') AS t");
     if (usersTable.rows[0].t) {
-      const adminCheck = await pool.query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
-      if (adminCheck.rows.length === 0) {
-        console.log("👤 Creating initial admin account...");
-        const adminEmail = (process.env.ADMIN_EMAIL || "admin@admin.com").toLowerCase();
-        const adminPass = process.env.ADMIN_PASSWORD || "adminPassword123!";
-        const adminName = process.env.ADMIN_NAME || "Super Admin";
+      const targetAdminEmail = (process.env.ADMIN_EMAIL || "infazyss@gmail.com").toLowerCase();
+      const targetAdminPass = process.env.ADMIN_PASSWORD || "Infaz@1010";
+      const targetAdminName = process.env.ADMIN_NAME || "Super Admin";
 
-        await tx(async (c) => {
-          const { rows } = await c.query(
-            "INSERT INTO users (full_name, email, password_hash, role) VALUES ($1, $2, $3, 'admin') RETURNING id",
-            [adminName, adminEmail, await hashPassword(adminPass)],
+      await tx(async (c) => {
+        const hashed = await hashPassword(targetAdminPass);
+
+        // Check if new admin email already exists
+        const existing = await c.query("SELECT id FROM users WHERE email = $1", [targetAdminEmail]);
+        let adminId: string | number;
+
+        if (existing.rows.length > 0) {
+          adminId = existing.rows[0].id;
+          await c.query(
+            "UPDATE users SET password_hash = $1, role = 'admin', is_active = true WHERE id = $2",
+            [hashed, adminId],
           );
-          for (const m of MODULES) {
+        } else {
+          // Check if legacy super admin email exists to rename it
+          const legacy = await c.query(
+            "SELECT id FROM users WHERE email = 'infazyssuperadmin@gmail.com' OR email = 'admin@admin.com' LIMIT 1",
+          );
+          if (legacy.rows.length > 0) {
+            adminId = legacy.rows[0].id;
             await c.query(
-              "INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, 'edit') ON CONFLICT DO NOTHING",
-              [rows[0].id, m],
+              "UPDATE users SET email = $1, password_hash = $2, role = 'admin', is_active = true WHERE id = $3",
+              [targetAdminEmail, hashed, adminId],
             );
+          } else {
+            // Check if any admin exists
+            const anyAdmin = await c.query("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
+            if (anyAdmin.rows.length > 0) {
+              adminId = anyAdmin.rows[0].id;
+              await c.query(
+                "UPDATE users SET email = $1, password_hash = $2, is_active = true WHERE id = $3",
+                [targetAdminEmail, hashed, adminId],
+              );
+            } else {
+              // Create new admin
+              const inserted = await c.query(
+                "INSERT INTO users (full_name, email, password_hash, role, is_active) VALUES ($1, $2, $3, 'admin', true) RETURNING id",
+                [targetAdminName, targetAdminEmail, hashed],
+              );
+              adminId = inserted.rows[0].id;
+            }
           }
-        });
-        console.log(`✅ Default admin account ready: ${adminEmail}`);
-      }
+        }
+
+        // Clean up legacy superadmin email if it still exists separately
+        if (targetAdminEmail !== "infazyssuperadmin@gmail.com") {
+          await c.query("DELETE FROM users WHERE email = 'infazyssuperadmin@gmail.com' AND id != $1", [adminId]);
+        }
+
+        // Ensure all module permissions
+        for (const m of MODULES) {
+          await c.query(
+            "INSERT INTO user_permissions (user_id, module, level) VALUES ($1, $2, 'edit') ON CONFLICT (user_id, module) DO UPDATE SET level = 'edit'",
+            [adminId, m],
+          );
+        }
+
+        console.log(`✅ Super admin account ready: ${targetAdminEmail}`);
+      });
     }
   } catch (err: any) {
     console.error("❌ Database initialization error:", err.message);
