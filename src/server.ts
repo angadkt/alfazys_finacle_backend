@@ -133,6 +133,8 @@ async function initDatabase() {
       "ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_status VARCHAR(50) DEFAULT 'Pending'",
 
       // Credit entries updates
+      "ALTER TABLE credit_entries ALTER COLUMN party_id DROP NOT NULL",
+      "ALTER TABLE credit_entries ALTER COLUMN account_id DROP NOT NULL",
       "ALTER TABLE credit_entries ADD COLUMN IF NOT EXISTS beneficiary_name TEXT",
       "ALTER TABLE credit_entries ADD COLUMN IF NOT EXISTS account_number TEXT",
       "ALTER TABLE credit_entries ADD COLUMN IF NOT EXISTS ifsc_code TEXT",
