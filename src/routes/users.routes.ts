@@ -16,7 +16,7 @@ const level = z.enum(["none", "view", "edit"]);
 const permissionsSchema = z.object({ financial: level, flat: level, investment: level }).partial().strict();
 const password = z.string().min(6, "Password must be at least 6 characters").max(200);
 
-const USER_FIELDS = "id, full_name, email, role, is_active, created_at";
+const USER_FIELDS = "id, full_name, show_name, designation, staff_code, email, role, is_active, created_at";
 
 /**
  * @openapi
@@ -26,7 +26,7 @@ const USER_FIELDS = "id, full_name, email, role, is_active, created_at";
  */
 router.get("/staff", async (_req, res) => {
   const { rows } = await pool.query(
-    `SELECT u.id, u.full_name, u.email, u.role, u.is_active, u.created_at,
+    `SELECT u.id, u.full_name, u.show_name, u.designation, u.staff_code, u.email, u.role, u.is_active, u.created_at,
             COALESCE(jsonb_object_agg(p.module, p.level) FILTER (WHERE p.module IS NOT NULL), '{}') AS permissions
      FROM users u LEFT JOIN user_permissions p ON p.user_id = u.id
      WHERE u.role = 'staff'
@@ -67,6 +67,10 @@ router.get("/", async (_req, res) => {
 router.post("/", async (req, res) => {
   const body = z.object({
     fullName: z.string().trim().min(1).max(200),
+    showName: z.string().trim().optional(),
+    designation: z.string().trim().optional(),
+    staffCode: z.string().trim().optional(),
+    username: z.string().trim().optional(),
     email: z.string().trim().toLowerCase().pipe(z.email()),
     password,
     role: z.literal("staff").default("staff"),
@@ -88,9 +92,23 @@ router.post("/", async (req, res) => {
     // Update existing staff member with new credentials and activate
     user = await tx(async (c) => {
       const { rows } = await c.query(
-        `UPDATE users SET full_name = $2, password_hash = $3, is_active = true, role = 'staff'
+        `UPDATE users 
+         SET full_name = $2, 
+             show_name = $3, 
+             designation = $4, 
+             staff_code = $5, 
+             password_hash = $6, 
+             is_active = true, 
+             role = 'staff'
          WHERE id = $1 RETURNING ${USER_FIELDS}`,
-        [existingUser.id, body.fullName, await hashPassword(body.password)]
+        [
+          existingUser.id, 
+          body.fullName, 
+          body.showName || null, 
+          body.designation || null, 
+          body.staffCode || null, 
+          await hashPassword(body.password)
+        ]
       );
       for (const m of MODULES) {
         await c.query(
@@ -104,7 +122,7 @@ router.post("/", async (req, res) => {
         action: "reprovision_user",
         table: "users",
         recordId: existingUser.id,
-        newData: { email: body.email, role: body.role, permissions: body.permissions ?? {} },
+        newData: { email: body.email, role: body.role, showName: body.showName, designation: body.designation, staffCode: body.staffCode, permissions: body.permissions ?? {} },
         ip: req.ip
       });
       return rows[0];
@@ -113,8 +131,18 @@ router.post("/", async (req, res) => {
     // Insert new staff member
     user = await tx(async (c) => {
       const { rows } = await c.query(
-        `INSERT INTO users (full_name, email, password_hash, role) VALUES ($1, $2, $3, $4) RETURNING ${USER_FIELDS}`,
-        [body.fullName, body.email, await hashPassword(body.password), body.role]
+        `INSERT INTO users (full_name, show_name, designation, staff_code, email, password_hash, role) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7) 
+         RETURNING ${USER_FIELDS}`,
+        [
+          body.fullName, 
+          body.showName || null, 
+          body.designation || null, 
+          body.staffCode || null, 
+          body.email, 
+          await hashPassword(body.password), 
+          body.role
+        ]
       );
       for (const m of MODULES) {
         await c.query(
