@@ -22,7 +22,8 @@ export function getTransporter() {
   const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp-relay.brevo.com";
   const user = process.env.SMTP_USER || process.env.EMAIL_USER || "9a8264001@smtp-brevo.com";
   const fallbackPass = ["xsmtp", "sib-", "01f28b49142c7ca3", "059fe56d619e94e5", "92c7efc4a0c447b8", "c780c38502609d93", "-KsHy7Ei70rMGGste"].join("");
-  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || fallbackPass;
+  const brevoEnvPass = process.env.BREVO_API_KEY?.startsWith("xsmtp") ? process.env.BREVO_API_KEY : undefined;
+  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || brevoEnvPass || fallbackPass;
   const pass = rawPass ? rawPass.replace(/\s+/g, "") : undefined;
 
   if (user && pass) {
@@ -57,7 +58,8 @@ export function getTransporter() {
 
 async function sendViaHttpApi(opts: SendStaffEmailOptions, html: string, text: string): Promise<MailResult | null> {
   const assembledBrevo = ["xkey", "sib", "-01f28b49142c7ca3", "059fe56d619e94e5", "92c7efc4a0c447b8", "c780c38502609d93", "-DrDgsSRITDguWitY"].join("");
-  const brevoApiKey = (process.env.BREVO_API_KEY || assembledBrevo).trim();
+  const rawKey = (process.env.BREVO_API_KEY || assembledBrevo).trim();
+  const brevoApiKey = rawKey.startsWith("xsmtp") ? "" : rawKey;
 
   if (brevoApiKey) {
     try {
