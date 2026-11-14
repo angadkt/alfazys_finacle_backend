@@ -234,7 +234,8 @@ async function initDatabase() {
         created_by          BIGINT REFERENCES users(id),
         created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
       )`,
-      "ALTER TABLE servicer_transactions ADD COLUMN IF NOT EXISTS beneficiary_branch TEXT"
+      "ALTER TABLE servicer_transactions ADD COLUMN IF NOT EXISTS beneficiary_branch TEXT",
+      "ALTER TABLE users ADD COLUMN IF NOT EXISTS username TEXT"
     ];
 
     await executeIndividualDDLs(CORE_DDL_UPDATES, "Core DDL Check");
