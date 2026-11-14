@@ -1,5 +1,3 @@
-import nodemailer from "nodemailer";
-
 export interface SendStaffEmailOptions {
   to: string;
   staffId: string;
@@ -16,109 +14,120 @@ export interface MailResult {
   previewUrl?: string;
   error?: string;
   smtpConfigured: boolean;
+  status?: "queued" | "delivered" | "failed";
 }
 
+/**
+ * Backward-compatible stub in case external scripts import getTransporter.
+ */
 export function getTransporter() {
-  const host = process.env.SMTP_HOST || process.env.EMAIL_HOST || "smtp-relay.brevo.com";
-  const user = process.env.SMTP_USER || process.env.EMAIL_USER || "9a8264001@smtp-brevo.com";
-  const fallbackPass = ["xsmtp", "sib-", "01f28b49142c7ca3", "059fe56d619e94e5", "92c7efc4a0c447b8", "c780c38502609d93", "-KsHy7Ei70rMGGste"].join("");
-  const brevoEnvPass = process.env.BREVO_API_KEY?.startsWith("xsmtp") ? process.env.BREVO_API_KEY : undefined;
-  const rawPass = process.env.SMTP_PASS || process.env.EMAIL_PASS || process.env.SMTP_PASSWORD || brevoEnvPass || fallbackPass;
-  const pass = rawPass ? rawPass.replace(/\s+/g, "") : undefined;
-
-  if (user && pass) {
-    const isGmail = host.toLowerCase().includes("gmail") || user.toLowerCase().includes("gmail");
-    if (isGmail) {
-      return nodemailer.createTransport({
-        service: "gmail",
-        auth: { user, pass },
-        connectionTimeout: 10000,
-        greetingTimeout: 10000,
-        socketTimeout: 12000
-      });
-    }
-    const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
-    return nodemailer.createTransport({
-      host,
-      port,
-      secure: process.env.SMTP_SECURE === "true" || port === 465,
-      auth: { user, pass },
-      connectionTimeout: 8000,
-      greetingTimeout: 8000,
-      socketTimeout: 10000,
-      tls: { rejectUnauthorized: false }
-    });
-  }
-
   return null;
 }
 
+/**
+ * Dispatches an email via the deployed Google Apps Script Web App.
+ */
+async function sendViaGoogleAppsScript(
+  opts: SendStaffEmailOptions,
+  subject: string,
+  text: string,
+  html: string
+): Promise<MailResult> {
+  const scriptUrl = process.env.GOOGLE_APPS_SCRIPT_URL?.trim();
+  const apiSecret = process.env.API_SECRET?.trim();
 
-async function sendViaHttpApi(opts: SendStaffEmailOptions, html: string, text: string): Promise<MailResult | null> {
-  const assembledBrevo = ["xkey", "sib", "-01f28b49142c7ca3", "059fe56d619e94e5", "92c7efc4a0c447b8", "c780c38502609d93", "-DrDgsSRITDguWitY"].join("");
-  const rawKey = (process.env.BREVO_API_KEY || assembledBrevo).trim();
-  const brevoApiKey = rawKey.startsWith("xsmtp") ? "" : rawKey;
-
-  if (brevoApiKey) {
-    try {
-      const senderEmail = process.env.BREVO_SENDER || "muhammedaman2.oaman@gmail.com";
-      const resp = await fetch("https://api.brevo.com/v3/smtp/email", {
-        method: "POST",
-        headers: {
-          "api-key": brevoApiKey,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          sender: { name: "Infazys Finacle", email: senderEmail },
-          to: [{ email: opts.to }],
-          subject: "Infazys Finacle — Staff Portal Credentials & Access Key",
-          htmlContent: html,
-          textContent: text
-        })
-      });
-      const data: any = await resp.json();
-      if (resp.ok && data?.messageId) {
-        console.log(`[BREVO HTTP SUCCESS] Email delivered to ${opts.to}. MessageId: ${data.messageId}`);
-        return { success: true, messageId: data.messageId, smtpConfigured: true };
-      } else {
-        console.error("[BREVO HTTP ERROR]", data);
-      }
-    } catch (err: any) {
-      console.error("[BREVO NETWORK ERROR]", err.message);
-    }
+  if (!scriptUrl || !apiSecret) {
+    const errorMsg = "Missing GOOGLE_APPS_SCRIPT_URL or API_SECRET in environment";
+    console.error(`[GOOGLE APPS SCRIPT CONFIG ERROR for ${opts.to}]:`, errorMsg);
+    return {
+      success: false,
+      error: errorMsg,
+      smtpConfigured: false,
+      status: "failed"
+    };
   }
 
-  // Fallback to Resend
-  const assembledResend = ["re_", "Tu1JVnbL_", "MUbDx6TM27tJ", "waAkUmBgkvEq"].join("");
-  const resendApiKey = (process.env.RESEND_API_KEY || assembledResend).trim();
-  if (resendApiKey) {
-    try {
-      const from = process.env.RESEND_FROM || "Infazys Finacle <onboarding@resend.dev>";
-      const resp = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${resendApiKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          from,
-          to: [opts.to],
-          subject: "Infazys Finacle — Staff Portal Credentials & Access Key",
-          html,
-          text
-        })
-      });
-      const data: any = await resp.json();
-      if (resp.ok && data?.id) {
-        console.log(`[RESEND HTTP SUCCESS] Email delivered to ${opts.to}. ID: ${data.id}`);
-        return { success: true, messageId: data.id, smtpConfigured: true };
-      }
-    } catch (err: any) {
-      console.error("[RESEND NETWORK ERROR]", err.message);
-    }
-  }
+  try {
+    const payload = {
+      apiKey: apiSecret,
+      to: opts.to,
+      subject,
+      message: text,
+      htmlBody: html
+    };
 
-  return null;
+    const resp = await fetch(scriptUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload),
+      redirect: "follow",
+      signal: AbortSignal.timeout(15000)
+    });
+
+    const responseText = await resp.text();
+    let responseData: any = null;
+    try {
+      responseData = JSON.parse(responseText);
+    } catch {
+      responseData = null;
+    }
+
+    if (!resp.ok) {
+      const errReason = responseData?.error || responseData?.message || responseText || `HTTP ${resp.status}`;
+      console.error(`[GOOGLE APPS SCRIPT HTTP ERROR ${resp.status} for ${opts.to}]:`, errReason);
+      return {
+        success: false,
+        error: `Google Apps Script HTTP error (${resp.status}): ${errReason}`,
+        smtpConfigured: true,
+        status: "failed"
+      };
+    }
+
+    // Check application-level status from Google Apps Script
+    if (responseData) {
+      if (responseData.status === "error" || responseData.success === false || responseData.error) {
+        const errReason = responseData.message || responseData.error || "Execution failed in Google Apps Script";
+        console.error(`[GOOGLE APPS SCRIPT REJECTED for ${opts.to}]:`, errReason);
+        return {
+          success: false,
+          error: `Google Apps Script rejected delivery: ${errReason}`,
+          smtpConfigured: true,
+          status: "failed"
+        };
+      }
+    } else if (responseText && /error|unauthorized|exception|failed/i.test(responseText)) {
+      console.error(`[GOOGLE APPS SCRIPT REJECTED for ${opts.to}]:`, responseText);
+      return {
+        success: false,
+        error: `Google Apps Script error: ${responseText}`,
+        smtpConfigured: true,
+        status: "failed"
+      };
+    }
+
+    const messageId = responseData?.messageId || responseData?.id || `gas-${Date.now()}`;
+    console.log(`[GOOGLE APPS SCRIPT SUCCESS] Email delivered to ${opts.to}. MessageId: ${messageId}`);
+    return {
+      success: true,
+      messageId,
+      smtpConfigured: true,
+      status: "delivered"
+    };
+  } catch (err: any) {
+    const isTimeout = err?.name === "TimeoutError" || err?.name === "AbortError";
+    const errMsg = isTimeout
+      ? "Request to Google Apps Script timed out after 15 seconds"
+      : (err?.message || "Network error");
+    console.error(`[GOOGLE APPS SCRIPT NETWORK ERROR for ${opts.to}]:`, errMsg);
+    return {
+      success: false,
+      error: errMsg,
+      smtpConfigured: true,
+      status: "failed"
+    };
+  }
 }
 
 export interface StaffEmailDispatchParams {
@@ -365,12 +374,10 @@ export function generateStaffEmailHtml(params: StaffEmailDispatchParams): { html
 
 export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Promise<MailResult> {
   const portalUrl = opts.portalUrl || process.env.PORTAL_URL || "https://alfazys-finacle.vercel.app";
-  const user = process.env.SMTP_USER || process.env.EMAIL_USER;
-  const from = process.env.SMTP_FROM || process.env.EMAIL_FROM || (user ? `"Infazys Finacle" <${user}>` : '"Infazys Finacle" <no-reply@infazys.com>');
-
   const fullName = opts.fullName || opts.to.split('@')[0].toUpperCase();
   const staffCode = opts.staffCode || opts.staffId;
   const loginUsername = opts.loginUsername || opts.to;
+  const subject = "Infazys Finacle — Staff Portal Credentials & Access Key";
 
   const { html, text } = generateStaffEmailHtml({
     toEmail: opts.to,
@@ -381,30 +388,5 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
     portalUrl
   });
 
-  // 1. Try Live Brevo SMTP Relay (Highest reliability & real-time inbox delivery)
-  const transporter = getTransporter();
-  if (transporter) {
-    try {
-      const fromAddress = process.env.SMTP_FROM || process.env.EMAIL_FROM || (user ? `"Infazys Finacle" <${user}>` : '"Infazys Finacle" <infazyss@gmail.com>');
-      const info = await transporter.sendMail({
-        from: fromAddress,
-        to: opts.to,
-        subject: "Infazys Finacle — Staff Portal Credentials & Access Key",
-        text,
-        html
-      });
-      console.log("[SMTP SUCCESS] Delivered to " + opts.to + " via live SMTP relay. MessageId: " + info.messageId);
-      return { success: true, messageId: info.messageId, smtpConfigured: true };
-    } catch (err: any) {
-      console.error("[SMTP TRANSPORT ERROR]", err.message);
-    }
-  }
-
-  // 2. Fallback to Brevo HTTP API
-  const httpResult = await sendViaHttpApi(opts, html, text);
-  if (httpResult && httpResult.success) {
-    return httpResult;
-  }
-
-  return { success: false, error: "No SMTP or HTTP mailer configured", smtpConfigured: false };
+  return sendViaGoogleAppsScript(opts, subject, text, html);
 }
