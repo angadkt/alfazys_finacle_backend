@@ -27,16 +27,14 @@ export function getTransporter() {
   const pass = rawPass ? rawPass.replace(/\s+/g, "") : undefined;
 
   if (user && pass) {
-    const isGmail = host.toLowerCase().includes("gmail");
+    const isGmail = host.toLowerCase().includes("gmail") || user.toLowerCase().includes("gmail");
     if (isGmail) {
       return nodemailer.createTransport({
-        host: "smtp.gmail.com",
-        port: 465,
-        secure: true,
+        service: "gmail",
         auth: { user, pass },
-        connectionTimeout: 8000,
-        greetingTimeout: 8000,
-        socketTimeout: 10000
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 12000
       });
     }
     const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT) || 587;
@@ -387,7 +385,7 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
   const transporter = getTransporter();
   if (transporter) {
     try {
-      const fromAddress = process.env.SMTP_FROM || process.env.EMAIL_FROM || '"Infazys Finacle" <muhammedaman2.oaman@gmail.com>';
+      const fromAddress = process.env.SMTP_FROM || process.env.EMAIL_FROM || (user ? `"Infazys Finacle" <${user}>` : '"Infazys Finacle" <infazyss@gmail.com>');
       const info = await transporter.sendMail({
         from: fromAddress,
         to: opts.to,
