@@ -140,7 +140,8 @@ export interface StaffEmailDispatchParams {
 }
 
 export function generateStaffEmailHtml(params: StaffEmailDispatchParams): { html: string; text: string } {
-  const { toEmail, fullName, staffCode, loginUsername, temporaryPassword } = params;
+  const { toEmail, fullName, staffCode, temporaryPassword } = params;
+  const loginUserId = toEmail;
   const portalUrl = params.portalUrl || 'https://alfazys-finacle.vercel.app';
   const dispatchId = 'FIN-' + Math.random().toString(36).substring(2, 8).toUpperCase() + '-' + Date.now().toString().slice(-4);
   const sentDate = new Date().toUTCString();
@@ -149,7 +150,7 @@ export function generateStaffEmailHtml(params: StaffEmailDispatchParams): { html
     `Dear ${fullName},\n` +
     `Your authorized staff operator account has been provisioned on the Infazys Finacle Banking Core.\n\n` +
     `OFFICIAL LOGIN CREDENTIALS:\n` +
-    `Login User ID: ${loginUsername}\n` +
+    `Login User ID: ${loginUserId}\n` +
     `Temporary Password: ${temporaryPassword}\n` +
     `Staff Code: ${staffCode}\n` +
     `Registered Email: ${toEmail}\n\n` +
@@ -236,8 +237,8 @@ export function generateStaffEmailHtml(params: StaffEmailDispatchParams): { html
                             &#128100; LOGIN USER ID
                           </div>
                           <div style="background-color: #f0f6ff; border: 1.5px solid #bcd2e8; border-radius: 6px; padding: 10px 8px; margin: 4px 0 10px 0;">
-                            <span style="font-family: 'Consolas', 'Courier New', Courier, monospace; font-size: 21px; font-weight: 800; color: #104080; letter-spacing: 1px; word-break: break-all; display: inline-block;">
-                              ${loginUsername}
+                            <span style="font-family: 'Consolas', 'Courier New', Courier, monospace; font-size: 18px; font-weight: 800; color: #104080; letter-spacing: 0.5px; word-break: break-all; display: inline-block;">
+                              ${loginUserId}
                             </span>
                           </div>
                           <div style="font-size: 11px; color: #475569; font-weight: 600;">
@@ -289,31 +290,31 @@ export function generateStaffEmailHtml(params: StaffEmailDispatchParams): { html
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding: 7px 0; color: #64748b; font-weight: 600;">Staff Code / ID:</td>
+                        <td width="160" style="padding: 7px 0; color: #64748b; font-weight: 600;">Staff Code / ID:</td>
                         <td style="padding: 7px 0; font-family: monospace; font-weight: 800; color: #0f172a; font-size: 14px;">
                           <span style="background-color: #e2e8f0; padding: 3px 10px; border-radius: 4px; border: 1px solid #cbd5e1; color: #104080;">${staffCode}</span>
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding: 7px 0; color: #64748b; font-weight: 600;">Login User ID:</td>
+                        <td width="160" style="padding: 7px 0; color: #64748b; font-weight: 600;">Login User ID:</td>
                         <td style="padding: 7px 0; font-family: monospace; font-weight: 800; color: #104080; font-size: 15px;">
-                          <span style="background-color: #e0edff; padding: 3px 10px; border-radius: 4px; border: 1px solid #90b8e8; color: #0b3c75;">${loginUsername}</span>
+                          <span style="background-color: #e0edff; padding: 3px 10px; border-radius: 4px; border: 1px solid #90b8e8; color: #0b3c75; word-break: break-all;">${loginUserId}</span>
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding: 7px 0; color: #64748b; font-weight: 600;">Registered Email:</td>
+                        <td width="160" style="padding: 7px 0; color: #64748b; font-weight: 600;">Registered Email:</td>
                         <td style="padding: 7px 0; font-weight: 600; color: #475569; font-size: 13px;">
                           ${toEmail}
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding: 7px 0; color: #64748b; font-weight: 600;">Assigned Role:</td>
+                        <td width="160" style="padding: 7px 0; color: #64748b; font-weight: 600;">Assigned Role:</td>
                         <td style="padding: 7px 0; font-weight: 700; color: #047857;">
                           Staff Banking Operator
                         </td>
                       </tr>
                       <tr>
-                        <td style="padding: 7px 0; color: #64748b; font-weight: 600;">Portal Address:</td>
+                        <td width="160" style="padding: 7px 0; color: #64748b; font-weight: 600;">Portal Address:</td>
                         <td style="padding: 7px 0;">
                           <a href="${portalUrl}" style="color: #104080; font-weight: 600; text-decoration: underline;">${portalUrl}</a>
                         </td>
@@ -376,7 +377,7 @@ export async function sendStaffCredentialsEmail(opts: SendStaffEmailOptions): Pr
   const portalUrl = opts.portalUrl || process.env.PORTAL_URL || "https://alfazys-finacle.vercel.app";
   const fullName = opts.fullName || opts.to.split('@')[0].toUpperCase();
   const staffCode = opts.staffCode || opts.staffId;
-  const loginUsername = opts.loginUsername || opts.to;
+  const loginUsername = opts.to;
   const subject = "Infazys Finacle — Staff Portal Credentials & Access Key";
 
   const { html, text } = generateStaffEmailHtml({
