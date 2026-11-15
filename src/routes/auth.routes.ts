@@ -60,7 +60,7 @@ router.post("/login", loginLimiter, async (req, res) => {
   const { email, password } = loginSchema.parse(req.body);
   const identifier = email.trim();
   const { rows } = await pool.query(
-    `SELECT id, full_name, email, role, is_active, password_hash 
+    `SELECT id, full_name, show_name, designation, staff_code, username, email, role, is_active, password_hash 
      FROM users 
      WHERE LOWER(email) = LOWER($1) 
         OR LOWER(COALESCE(staff_code, '')) = LOWER($1) 
@@ -88,7 +88,16 @@ router.post("/login", loginLimiter, async (req, res) => {
   await audit(pool, { userId: String(user.id), action: "login", ip: req.ip });
   res.json({
     token,
-    user: { id: String(user.id), fullName: user.full_name, email: user.email, role: user.role },
+    user: {
+      id: String(user.id),
+      fullName: user.full_name,
+      showName: user.show_name,
+      designation: user.designation,
+      staffCode: user.staff_code,
+      username: user.username,
+      email: user.email,
+      role: user.role
+    },
   });
 });
 
