@@ -276,7 +276,7 @@ async function initDatabase() {
         if (existing.rows.length > 0) {
           adminId = existing.rows[0].id;
           await c.query(
-            "UPDATE users SET password_hash = $1, role = 'admin', is_active = true WHERE id = $2",
+            "UPDATE users SET password_hash = $1, role = 'admin', is_active = true, show_name = 'Muhamed Fazil Kollattvalappil', designation = 'Super Admin' WHERE id = $2",
             [hashed, adminId],
           );
         } else {
@@ -287,7 +287,7 @@ async function initDatabase() {
           if (legacy.rows.length > 0) {
             adminId = legacy.rows[0].id;
             await c.query(
-              "UPDATE users SET email = $1, password_hash = $2, role = 'admin', is_active = true WHERE id = $3",
+              "UPDATE users SET email = $1, password_hash = $2, role = 'admin', is_active = true, show_name = 'Muhamed Fazil Kollattvalappil', designation = 'Super Admin' WHERE id = $3",
               [targetAdminEmail, hashed, adminId],
             );
           } else {
@@ -296,13 +296,13 @@ async function initDatabase() {
             if (anyAdmin.rows.length > 0) {
               adminId = anyAdmin.rows[0].id;
               await c.query(
-                "UPDATE users SET email = $1, password_hash = $2, is_active = true WHERE id = $3",
+                "UPDATE users SET email = $1, password_hash = $2, is_active = true, show_name = 'Muhamed Fazil Kollattvalappil', designation = 'Super Admin' WHERE id = $3",
                 [targetAdminEmail, hashed, adminId],
               );
             } else {
               // Create new admin
               const inserted = await c.query(
-                "INSERT INTO users (full_name, email, password_hash, role, is_active) VALUES ($1, $2, $3, 'admin', true) RETURNING id",
+                "INSERT INTO users (full_name, show_name, designation, email, password_hash, role, is_active) VALUES ($1, 'Muhamed Fazil Kollattvalappil', 'Super Admin', $2, $3, 'admin', true) RETURNING id",
                 [targetAdminName, targetAdminEmail, hashed],
               );
               adminId = inserted.rows[0].id;
